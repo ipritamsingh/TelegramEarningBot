@@ -23,7 +23,7 @@ class UserState(StatesGroup):
     waiting_for_task_code = State()
 
 # ==========================================
-# 🛠️ HELPERS
+# 🛠️ HELPERS (Logic & UI)
 # ==========================================
 
 def get_main_menu():
@@ -50,9 +50,10 @@ async def is_user_subscribed(bot, user_id):
             return True
         return False
     except Exception as e:
-        print(f"[ERROR] Force Sub Check: {e}")
+        print(f"[ERROR] Force Sub Check Failed: {e}")
         return False 
 
+# Central Dashboard Logic
 async def check_and_show_dashboard(message, user_id, first_name):
     if await is_user_subscribed(message.bot, user_id):
         await message.answer(
@@ -74,12 +75,14 @@ async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     user = await get_user(user_id)
 
+    # --- Old User ---
     if user:
         if user.get("is_banned", False):
             await message.answer("🚫 **You are BANNED!**\nContact Admin."); return
         await check_and_show_dashboard(message, user_id, message.from_user.first_name)
         return
 
+    # --- New User ---
     await message.answer("👋 **Welcome!**\nAccount banane ke liye apna **Email** bhejein.")
     await state.set_state(UserState.waiting_for_email)
 
@@ -96,6 +99,9 @@ async def process_email(message: types.Message, state: FSMContext):
     await state.clear()
     await check_and_show_dashboard(message, message.from_user.id, message.from_user.first_name)
 
+# ==========================================
+# 3. VERIFY BUTTON HANDLER
+# ==========================================
 @user_router.callback_query(F.data == "check_subscription")
 async def verify_click(callback: types.CallbackQuery):
     if await is_user_subscribed(callback.bot, callback.from_user.id):
@@ -105,54 +111,54 @@ async def verify_click(callback: types.CallbackQuery):
             reply_markup=get_main_menu()
         )
     else:
-        await callback.answer("❌ Join nahi kiya!", show_alert=True)
+        await callback.answer("❌ Join nahi kiya! Pehle Join Channel button dabayein.", show_alert=True)
 
 # ==========================================
-# 🔥 NEW: 1-CLICK INSTANT UNLOCK
+# 🔥 NEW: 1-CLICK INSTANT UNLOCK (FIXED)
 # ==========================================
 @user_router.message(F.text == "🔓 Unlock Task Today")
 async def unlock_task_request(message: types.Message):
-    # Step 1: User ne Menu button dabaya
-    # Hum ek 'Callback Button' denge jo MAGIC karega
-    
+    # Step 1: User ko Red Button dikhao
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔴 Open Channel & Unlock", callback_data="perform_auto_unlock")
+    kb.button(text="🔴 Click to Open Channel & Unlock", callback_data="perform_instant_unlock")
     
     await message.answer(
-        "🔒 **Tasks Locked!**\n\n"
-        "Unlock karne ke liye niche diye gaye button par **Click** karein.\n"
-        "Ye automatically Channel open karega aur Task Unlock kar dega.",
+        "🔒 **Unlock Process:**\n\n"
+        "Niche diye gaye button par **Click** karein.\n"
+        "Ye automatically Channel open karega aur Task **Unlock** kar dega.",
         reply_markup=kb.as_markup()
     )
 
-@user_router.callback_query(F.data == "perform_auto_unlock")
-async def process_auto_unlock(callback: types.CallbackQuery):
+@user_router.callback_query(F.data == "perform_instant_unlock")
+async def process_unlock_instant(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     
-    # 1. Prepare Link (Ensure HTTPS)
-    # Bina https ke telegram auto-open fail kar deta hai
-    channel_link = FORCE_SUB_LINK.strip()
+    # 1. Link Preparation (Ensure HTTPS)
+    channel_link = str(FORCE_SUB_LINK).strip()
     if not channel_link.startswith("http"):
         channel_link = f"https://{channel_link}"
 
-    # 2. Database Update (Backend)
+    # 2. Database Update (Backend: Unlock Task)
     await mark_user_renewed(user_id)
     
-    # 3. Message Edit (Frontend)
-    # Message wahi ke wahi change ho jayega "UNLOCKED" me.
-    # Hum ek backup link button bhi chhod denge agar auto-open fail hua to.
+    # 3. Message Edit (Visual Confirmation) + Backup Button
+    # Backup button isliye agar auto-open fail ho jaye
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔗 Open Channel (If not opened)", url=channel_link)
+    kb.button(text="📢 Open Channel Manually", url=channel_link)
 
     await callback.message.edit_text(
         "✅ **Tasks UNLOCKED Successfully!**\n\n"
-        "Channel visit karne ke baad wapis aayein aur **🚀 Start Task** button dabayein.",
+        "Agar channel open nahi hua to niche click karein.\n"
+        "Warna **🚀 Start Task** button dabayein.",
         reply_markup=kb.as_markup()
     )
     
     # 4. THE MAGIC: Auto Open Link
-    # Ye user ko forcefully channel par redirect karega
-    await callback.answer("Unlocking & Opening Channel...", url=channel_link)
+    # Ye line browser/channel open karti hai
+    try:
+        await callback.answer("Unlocking & Opening Channel...", url=channel_link)
+    except:
+        await callback.answer("Unlocked! Please join channel manually.", show_alert=True)
 
 # ==========================================
 # 4. TASK LOGIC (Secure)
@@ -162,11 +168,12 @@ async def process_auto_unlock(callback: types.CallbackQuery):
 async def cmd_get_task(message: types.Message):
     user_id = message.from_user.id
 
+    # CHECK 1: Force Subscribe
     if not await is_user_subscribed(message.bot, user_id):
         await message.answer("⚠️ **Alert:** Channel Left! Join wapis karein:", reply_markup=get_join_channel_kb())
         return
 
-    # Check Unlock (Aaj ka task unlock kiya ya nahi?)
+    # CHECK 2: Unlock Status
     if not await check_user_renewed_today(user_id):
         await message.answer(
             "🛑 **Tasks Locked!**\n\n"
@@ -175,6 +182,7 @@ async def cmd_get_task(message: types.Message):
         )
         return
 
+    # CHECK 3: Fetch Task
     task, err = await get_next_task_for_user(user_id)
     if not task: await message.answer(f"⚠️ {err}"); return
 
@@ -231,8 +239,6 @@ async def cmd_help(message: types.Message):
     kb = InlineKeyboardBuilder()
     if SUPPORT_BOT_USERNAME:
         kb.button(text="👨‍💻 Contact Support", url=f"https://t.me/{SUPPORT_BOT_USERNAME}")
-    
-   
     
     await message.answer(
         "📜 **OFFICIAL RULES & GUIDELINES**\n"
