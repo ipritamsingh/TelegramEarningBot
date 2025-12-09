@@ -21,10 +21,10 @@ class UserState(StatesGroup):
     waiting_for_task_code = State()
 
 # ==========================================
-# 🛠️ HELPERS
+# 🛠️ HELPERS (Logic & UI)
 # ==========================================
 
-# 1. MAIN MENU (Earning Options)
+# 1. MAIN MENU (Earning Options - Verification ke baad dikhega)
 def get_main_menu():
     kb = ReplyKeyboardBuilder()
     kb.button(text="🚀 Start Task")
@@ -33,7 +33,7 @@ def get_main_menu():
     kb.adjust(2, 1)
     return kb.as_markup(resize_keyboard=True)
 
-# 2. JOIN CHANNEL BUTTONS
+# 2. JOIN CHANNEL BUTTONS (Verification ke pehle dikhega)
 def get_join_channel_kb():
     kb = InlineKeyboardBuilder()
     kb.button(text="📢 Join Official Channel", url=FORCE_SUB_LINK)
@@ -41,33 +41,45 @@ def get_join_channel_kb():
     kb.adjust(1)
     return kb.as_markup()
 
-# 3. CHECK SUBSCRIPTION LOGIC
+# 3. CHECK SUBSCRIPTION LOGIC (The Core Fix)
 async def is_user_subscribed(bot, user_id):
     try:
-        # User ka status check karo channel me
-        member = await bot.get_chat_member(chat_id=FORCE_SUB_CHANNEL_ID, user_id=user_id)
+        # FIX: Ensure Channel ID is an Integer
+        channel_id = int(FORCE_SUB_CHANNEL_ID)
+        
+        # Telegram API Call
+        member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+        
+        # Debug Log (Render Console me dikhega)
+        print(f"[DEBUG] Check User: {user_id} | Status: {member.status}")
+
         if member.status in ['creator', 'administrator', 'member']:
             return True
-        return False
+        else:
+            return False
+            
     except Exception as e:
-        # Agar Bot admin nahi hai channel me ya ID galat hai
+        print(f"[ERROR] Force Sub Failed: {e}")
+        # Common Reasons: 
+        # 1. Bot Channel ka Admin nahi hai.
+        # 2. Channel ID galat hai (-100 missing).
         return False 
 
-# 4. CENTRAL DASHBOARD CONTROLLER (New & Old User Dono ke liye)
+# 4. CENTRAL CONTROLLER (Dono users ke liye barrier)
 async def check_and_show_dashboard(message, user_id, first_name):
     """
-    Ye function check karega ki user ne join kiya hai ya nahi.
-    Agar Joined hai -> Menu dikhayega.
-    Agar Nahi hai -> Join Button dikhayega.
+    Ye function decide karega: Dashboard dikhana hai ya Force Join?
     """
-    if await is_user_subscribed(message.bot, user_id):
-        # ✅ User Verified
+    is_joined = await is_user_subscribed(message.bot, user_id)
+    
+    if is_joined:
+        # ✅ Verified: Menu Dikhao
         await message.answer(
             f"🎉 **Verification Successful!**\n\nWelcome {first_name}! 👇\nEarning shuru karne ke liye option select karein:",
             reply_markup=get_main_menu()
         )
     else:
-        # ❌ User Not Verified
+        # ❌ Not Verified: Join Button Dikhao
         await message.answer(
             f"⚠️ **Action Required!**\n\nHello {first_name}, bot use karne ke liye hamara **Official Channel** join karna zaroori hai.\n\n👇 **Join karein aur Verify par click karein:**",
             reply_markup=get_join_channel_kb()
@@ -87,7 +99,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             await message.answer("🚫 **You are BANNED!**\nContact Admin.")
             return
         
-        # Purana user hai, par channel check zaroori hai
+        # Purana user hai -> Seedha Join Check par bhejo
         await check_and_show_dashboard(message, user_id, message.from_user.first_name)
         return
 
@@ -114,11 +126,11 @@ async def process_email(message: types.Message, state: FSMContext):
     await create_user(message.from_user.id, message.from_user.first_name, message.from_user.username, email)
     await state.clear()
     
-    # Account ban gaya, ab Force Join check karo
+    # Account ban gaya -> Ab Join Check par bhejo
     await check_and_show_dashboard(message, message.from_user.id, message.from_user.first_name)
 
 # ==========================================
-# 3. CHECK JOIN BUTTON HANDLER
+# 3. VERIFY BUTTON HANDLER
 # ==========================================
 @user_router.callback_query(F.data == "check_subscription")
 async def verify_click(callback: types.CallbackQuery):
@@ -129,7 +141,7 @@ async def verify_click(callback: types.CallbackQuery):
             reply_markup=get_main_menu()
         )
     else:
-        await callback.answer("❌ Aapne abhi tak Channel Join nahi kiya!", show_alert=True)
+        await callback.answer("❌ Join nahi kiya! Pehle Channel Join karein.", show_alert=True)
 
 # ==========================================
 # 4. TASK LOGIC (Double Check)
@@ -137,7 +149,7 @@ async def verify_click(callback: types.CallbackQuery):
 @user_router.message(F.text == "🚀 Start Task")
 @user_router.message(Command("tasks"))
 async def cmd_get_task(message: types.Message):
-    # Agar user ne channel leave kar diya ho to pakad lo
+    # Security Check: Agar user join karke leave kar de
     if not await is_user_subscribed(message.bot, message.from_user.id):
         await message.answer("⚠️ **Alert:** Aapne Channel leave kar diya!\nJoin wapis karein:", reply_markup=get_join_channel_kb())
         return
@@ -166,7 +178,7 @@ async def cmd_get_task(message: types.Message):
         reply_markup=kb.as_markup()
     )
 
-# --- Task Code Logic ---
+# --- Task Code Logic (Same as before) ---
 @user_router.callback_query(F.data.startswith("askcode_"))
 async def ask_for_code(callback: types.CallbackQuery, state: FSMContext):
     task_id = callback.data.split("_")[1]
