@@ -1,4 +1,5 @@
 import re
+import asyncio  # <--- Ye zaroori hai delay ke liye
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -10,8 +11,8 @@ from database import (
     get_next_task_for_user, 
     get_task_details, 
     mark_task_complete,
-    mark_user_renewed,        # Required for unlock
-    check_user_renewed_today  # Required for check
+    mark_user_renewed,
+    check_user_renewed_today
 )
 from config import FORCE_SUB_CHANNEL_ID, FORCE_SUB_LINK, SUPPORT_BOT_USERNAME
 
@@ -23,7 +24,7 @@ class UserState(StatesGroup):
     waiting_for_task_code = State()
 
 # ==========================================
-# 🛠️ HELPERS (UI & Logic)
+# 🛠️ HELPERS
 # ==========================================
 
 def get_main_menu():
@@ -44,7 +45,6 @@ def get_join_channel_kb():
 
 async def is_user_subscribed(bot, user_id):
     try:
-        # Convert to int to avoid errors
         channel_id = int(FORCE_SUB_CHANNEL_ID)
         member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
         if member.status in ['creator', 'administrator', 'member']:
@@ -75,14 +75,12 @@ async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     user = await get_user(user_id)
 
-    # --- Old User ---
     if user:
         if user.get("is_banned", False):
             await message.answer("🚫 **You are BANNED!**\nContact Admin."); return
         await check_and_show_dashboard(message, user_id, message.from_user.first_name)
         return
 
-    # --- New User ---
     await message.answer("👋 **Welcome!**\nAccount banane ke liye apna **Email** bhejein.")
     await state.set_state(UserState.waiting_for_email)
 
@@ -99,9 +97,6 @@ async def process_email(message: types.Message, state: FSMContext):
     await state.clear()
     await check_and_show_dashboard(message, message.from_user.id, message.from_user.first_name)
 
-# ==========================================
-# 3. VERIFY BUTTON HANDLER
-# ==========================================
 @user_router.callback_query(F.data == "check_subscription")
 async def verify_click(callback: types.CallbackQuery):
     if await is_user_subscribed(callback.bot, callback.from_user.id):
@@ -111,66 +106,85 @@ async def verify_click(callback: types.CallbackQuery):
             reply_markup=get_main_menu()
         )
     else:
-        await callback.answer("❌ Join nahi kiya! Pehle Join Channel button dabayein.", show_alert=True)
+        await callback.answer("❌ Join nahi kiya!", show_alert=True)
 
 # ==========================================
-# 🔥 NEW: INSTANT UNLOCK LOGIC (The One-Tap Magic)
+# 🔥 NEW: DELAYED CONFIRM BUTTON LOGIC
 # ==========================================
 @user_router.message(F.text == "🔓 Unlock Task Today")
 async def unlock_task_request(message: types.Message):
-    # Telegram Limitation: Reply Keyboard cannot open links directly.
-    # So we send a special Inline Button that does BOTH (Open Link + Unlock DB).
+    # 1. Link Prepare Karo
+    channel_link = str(FORCE_SUB_LINK).strip()
+    if not channel_link.startswith("http"):
+        channel_link = f"https://{channel_link}"
     
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🔴 Click to Open Channel & Unlock", callback_data="perform_instant_unlock")
+    # 2. Pehle Sirf "Red Button" Dikhao
+    kb_initial = InlineKeyboardBuilder()
+    kb_initial.button(text="🔴 Open & Unlock Task", url=channel_link)
     
-    await message.answer(
-        "🔒 **Unlock Process:**\n\n"
-        "Niche diye gaye button par click karein.\n"
-        "Isse **Official Channel** open hoga aur Tasks **Unlock** ho jayenge.",
-        reply_markup=kb.as_markup()
+    # Message bhejo (Abhi Confirm button nahi hai)
+    sent_msg = await message.answer(
+        "🔓 **Unlock Process Started...**\n\n"
+        "1️⃣ Upar diye gaye **Red Button** par click karke Channel Join karein.\n"
+        "2️⃣ **3 Second wait karein**, Confirm button niche appear hoga...",
+        reply_markup=kb_initial.as_markup()
     )
 
-@user_router.callback_query(F.data == "perform_instant_unlock")
-async def process_unlock_instant(callback: types.CallbackQuery):
+    # 3. Wait for 3 Seconds (Simulating user clicking the link)
+    await asyncio.sleep(3)
+
+    # 4. Message Update Karo (Ab Confirm button add kar do)
+    kb_final = InlineKeyboardBuilder()
+    kb_final.button(text="🔴 Open & Unlock Task", url=channel_link)
+    # Naya Button Add kiya
+    kb_final.button(text="✅ Confirm & Unlock", callback_data="confirm_task_unlock")
+    kb_final.adjust(1) # Ek ke niche ek
+
+    try:
+        await sent_msg.edit_reply_markup(reply_markup=kb_final.as_markup())
+    except:
+        pass # Agar user ne message delete kar diya ho to error ignore karo
+
+# --- CONFIRM HANDLER (Database Update Yahan Hoga) ---
+@user_router.callback_query(F.data == "confirm_task_unlock")
+async def confirm_unlock_click(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     
-    # 1. Database Update (Task Unlocked)
+    # 1. Database Update (Ab Task Unlock hoga)
     await mark_user_renewed(user_id)
     
-    # 2. Visual Update (User ko batao unlock ho gaya)
+    # 2. Message Change (Success)
     await callback.message.edit_text(
-        "✅ **Successfully Unlocked!**\n\n"
-        "Channel visit karne ke baad wapis aayein aur **🚀 Start Task** button dabayein."
+        "✅ **Tasks Unlocked Successfully!**\n\n"
+        "Ab aap **🚀 Start Task** button use kar sakte hain.\n"
+        "Happy Earning! 💰"
     )
-    
-    # 3. DIRECT ACTION: Open URL via Callback
-    # Ye user ko directly Channel par le jayega
-    await callback.answer("Opening Channel...", url=FORCE_SUB_LINK)
+    await callback.answer("Success! Tasks Unlocked.")
 
 # ==========================================
-# 4. TASK LOGIC (Secure Check)
+# 4. TASK LOGIC (Double Security Check)
 # ==========================================
 @user_router.message(F.text == "🚀 Start Task")
 @user_router.message(Command("tasks"))
 async def cmd_get_task(message: types.Message):
     user_id = message.from_user.id
 
-    # Check 1: Force Subscribe
+    # CHECK 1: Force Subscribe
     if not await is_user_subscribed(message.bot, user_id):
-        await message.answer("⚠️ **Alert:** Channel Left! Join wapis karein:", reply_markup=get_join_channel_kb())
+        await message.answer("⚠️ **Alert:** Aapne Channel Join nahi kiya!\nJoin karein:", reply_markup=get_join_channel_kb())
         return
 
-    # Check 2: Unlock Status
+    # CHECK 2: Unlock Status
+    # Agar user ne 'Confirm' button nahi dabaya, to ye False rahega
     if not await check_user_renewed_today(user_id):
         await message.answer(
             "🛑 **Tasks Locked!**\n\n"
-            "Tasks start karne se pehle **'🔓 Unlock Task Today'** button par click karein aur Channel visit karein.",
+            "Tasks start karne se pehle **'🔓 Unlock Task Today'** par click karein aur process complete karein.",
             reply_markup=get_main_menu()
         )
         return
 
-    # Check 3: Fetch Task
+    # CHECK 3: Fetch Task
     task, err = await get_next_task_for_user(user_id)
     if not task: await message.answer(f"⚠️ {err}"); return
 
