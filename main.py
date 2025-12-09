@@ -2,51 +2,37 @@ import asyncio
 import logging
 import sys
 import os
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiohttp import web # Ye hum fake server ke liye use karenge
+from aiogram import Bot, Dispatcher
+from aiohttp import web
 from config import BOT_TOKEN
-from database import add_user
+
+# Note: Humne yaha se database import hata diya hai
+# Kyunki ab saara kaam handlers/user.py aur handlers/admin.py kar rahe hain
+
+from handlers.admin import admin_router
+from handlers.user import user_router
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-
-
-
-# ... purane imports ...
-from handlers.admin import admin_router # Import kiya
-from handlers.user import user_router
 # Bot setup
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Router Connect karna
+# Routers jodna (Admin aur User logic)
 dp.include_router(admin_router)
 dp.include_router(user_router)
-# --- USER HANDLERS (Isse baad me alag file me dalenge) ---
 
-
-# --- HANDLERS ---
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    user = message.from_user
-    is_new = await add_user(user.id, user.first_name, user.username)
-    if is_new:
-        await message.answer(f"Welcome {user.first_name}! 🚀\nAapka account create kar diya gaya hai.")
-    else:
-        await message.answer(f"Welcome back {user.first_name}! 👋\nAap pehle se register hain.")
-
-# --- FAKE WEB SERVER (Render ko khush rakhne ke liye) ---
+# --- FAKE WEB SERVER (Render Keep-Alive) ---
 async def handle(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="Bot is Live & Running!")
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render PORT environment variable deta hai, use wo use karna padega
+    # Render PORT variable use karega
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
@@ -56,7 +42,9 @@ async def start_web_server():
 async def main():
     logging.info("Starting Bot + Web Server...")
     
-    # Hum dono kaam ek saath karenge: Bot Polling + Web Server
+    # Bot delete webhook (Conflicts rokne ke liye)
+    await bot.delete_webhook(drop_pending_updates=True)
+
     await asyncio.gather(
         dp.start_polling(bot),
         start_web_server()
