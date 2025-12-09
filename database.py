@@ -202,3 +202,12 @@ async def get_all_user_ids():
     """Broadcast ke liye"""
     users = await users_col.find({}, {"user_id": 1}).to_list(None)
     return [u['user_id'] for u in users]
+
+
+
+# --- Naya Function Add karein ---
+async def get_user_by_email(email):
+    """Email se user dhundne ke liye"""
+    if users_col is None: return None
+    # Case-insensitive search (chhota/bada letter fark nahi padega)
+    return await users_col.find_one({"email": email})
