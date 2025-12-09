@@ -1,5 +1,5 @@
 import asyncio
-from aiogram import Router, types, F
+from aiogram import Router, types, F, Bot  # <--- Bot Class import kiya
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -10,13 +10,13 @@ from database import (
     delete_task_from_db,
     get_system_stats, 
     get_user_details, 
-    get_user_by_email,  # <--- Email Search Function
+    get_user_by_email,
     update_user_ban_status,
     admin_add_balance, 
     get_all_user_ids
 )
 from utils import shorten_link
-from config import ADMIN_IDS
+from config import ADMIN_IDS, BOT_TOKEN # <--- BOT_TOKEN import kiya (User Bot wala)
 
 admin_router = Router()
 
@@ -300,7 +300,7 @@ async def process_add_balance(m: types.Message, state: FSMContext):
         await m.answer("❌ Invalid Amount. Sirf number daalein.")
 
 # ==========================================
-# 5. BROADCAST
+# 5. BROADCAST (User Bot ke through)
 # ==========================================
 @admin_router.callback_query(F.data == "btn_broadcast")
 async def start_broadcast(c: types.CallbackQuery, state: FSMContext):
@@ -313,17 +313,26 @@ async def send_broadcast(m: types.Message, state: FSMContext):
     msg_text = m.text
     status = await m.answer("⏳ **Sending Broadcast...**")
     
+    # --- FIX START ---
+    # Hum temporary User Bot create kar rahe hain message bhejne ke liye
+    user_bot_sender = Bot(token=BOT_TOKEN)
+    
     ids = await get_all_user_ids()
     count = 0
     blocked = 0
     
     for uid in ids:
         try:
-            await m.bot.send_message(uid, f"📢 **ADMIN NOTICE**\n\n{msg_text}")
+            # Use User Bot to send message
+            await user_bot_sender.send_message(uid, f"📢 **ADMIN NOTICE**\n\n{msg_text}")
             count += 1
             await asyncio.sleep(0.05) # Flood limit safe
         except:
             blocked += 1
+    
+    # Session close karna zaroori hai
+    await user_bot_sender.session.close()
+    # --- FIX END ---
     
     await status.edit_text(f"✅ **Broadcast Complete!**\nSent: {count}\nFailed/Blocked: {blocked}")
     await state.clear()

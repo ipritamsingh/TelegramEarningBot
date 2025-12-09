@@ -8,6 +8,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 
+FORCE_SUB_CHANNEL_ID = os.getenv("FORCE_SUB_CHANNEL_ID") 
+FORCE_SUB_LINK = os.getenv("FORCE_SUB_LINK")
+SUPPORT_BOT_USERNAME = os.getenv("SUPPORT_BOT_USERNAME")
+
 # 3 Shortener APIs
 SHORTENER_CONFIG = {
     "gplinks": {
