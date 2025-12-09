@@ -16,14 +16,14 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 # ... purane imports ...
 from handlers.admin import admin_router # Import kiya
-
+from handlers.user import user_router
 # Bot setup
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # Router Connect karna
 dp.include_router(admin_router)
-
+dp.include_router(user_router)
 # --- USER HANDLERS (Isse baad me alag file me dalenge) ---
 
 
