@@ -11,9 +11,21 @@ from database import add_user
 # Logging setup
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
+
+
+
+# ... purane imports ...
+from handlers.admin import admin_router # Import kiya
+
 # Bot setup
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# Router Connect karna
+dp.include_router(admin_router)
+
+# --- USER HANDLERS (Isse baad me alag file me dalenge) ---
+
 
 # --- HANDLERS ---
 @dp.message(Command("start"))
