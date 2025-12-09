@@ -211,3 +211,27 @@ async def get_user_by_email(email):
     if users_col is None: return None
     # Case-insensitive search (chhota/bada letter fark nahi padega)
     return await users_col.find_one({"email": email})
+
+
+
+# --- NEW: RENEW TASK LOGIC ---
+
+async def mark_user_renewed(user_id):
+    """User ne 'Renew Task Today' button dabaya, aaj ki date save karo"""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    await users_col.update_one(
+        {"user_id": int(user_id)},
+        {"$set": {"last_renew_date": today_str}}
+    )
+    return True
+
+async def check_user_renewed_today(user_id):
+    """Check karo ki user ne aaj Renew button dabaya tha ya nahi"""
+    user = await users_col.find_one({"user_id": int(user_id)})
+    if not user: return False
+    
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    last_renew = user.get("last_renew_date")
+    
+    return last_renew == today_str

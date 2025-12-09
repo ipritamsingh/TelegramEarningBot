@@ -9,7 +9,9 @@ from database import (
     create_user, 
     get_next_task_for_user, 
     get_task_details, 
-    mark_task_complete
+    mark_task_complete,
+    mark_user_renewed,        # <--- New Import
+    check_user_renewed_today  # <--- New Import
 )
 from config import FORCE_SUB_CHANNEL_ID, FORCE_SUB_LINK, SUPPORT_BOT_USERNAME
 
@@ -21,19 +23,22 @@ class UserState(StatesGroup):
     waiting_for_task_code = State()
 
 # ==========================================
-# 🛠️ HELPERS (Logic & UI)
+# 🛠️ HELPERS (UI & Logic)
 # ==========================================
 
-# 1. MAIN MENU (Earning Options - Verification ke baad dikhega)
+# 1. MAIN MENU (Updated with Renew Button)
 def get_main_menu():
     kb = ReplyKeyboardBuilder()
+    # "Renew Task Today" sabse upar (Requirement)
+    kb.button(text="🔄 Renew Task Today") 
     kb.button(text="🚀 Start Task")
     kb.button(text="💰 My Balance")
     kb.button(text="ℹ️ Help / Rules")
-    kb.adjust(2, 1)
+    # Layout: 1 (Renew), 2 (Task/Bal), 1 (Help)
+    kb.adjust(1, 2, 1)
     return kb.as_markup(resize_keyboard=True)
 
-# 2. JOIN CHANNEL BUTTONS (Verification ke pehle dikhega)
+# 2. JOIN CHANNEL BUTTONS
 def get_join_channel_kb():
     kb = InlineKeyboardBuilder()
     kb.button(text="📢 Join Official Channel", url=FORCE_SUB_LINK)
@@ -41,47 +46,37 @@ def get_join_channel_kb():
     kb.adjust(1)
     return kb.as_markup()
 
-# 3. CHECK SUBSCRIPTION LOGIC (The Core Fix)
+# 3. CHECK SUBSCRIPTION LOGIC (Strict Mode)
 async def is_user_subscribed(bot, user_id):
     try:
-        # FIX: Ensure Channel ID is an Integer
+        # FIX: Ensure Channel ID is Integer
         channel_id = int(FORCE_SUB_CHANNEL_ID)
         
-        # Telegram API Call
         member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
         
-        # Debug Log (Render Console me dikhega)
-        print(f"[DEBUG] Check User: {user_id} | Status: {member.status}")
+        # Debugging log (Render logs me dikhega)
+        print(f"[DEBUG] User: {user_id} | Status: {member.status}")
 
         if member.status in ['creator', 'administrator', 'member']:
             return True
-        else:
-            return False
-            
+        return False
     except Exception as e:
-        print(f"[ERROR] Force Sub Failed: {e}")
-        # Common Reasons: 
-        # 1. Bot Channel ka Admin nahi hai.
-        # 2. Channel ID galat hai (-100 missing).
+        print(f"[ERROR] Force Sub Check Failed: {e}")
+        # Agar Bot admin nahi hai ya ID galat hai -> False return karo
         return False 
 
-# 4. CENTRAL CONTROLLER (Dono users ke liye barrier)
+# 4. CENTRAL CONTROLLER
 async def check_and_show_dashboard(message, user_id, first_name):
-    """
-    Ye function decide karega: Dashboard dikhana hai ya Force Join?
-    """
-    is_joined = await is_user_subscribed(message.bot, user_id)
-    
-    if is_joined:
-        # ✅ Verified: Menu Dikhao
+    # Pehle check karo join kiya hai ya nahi
+    if await is_user_subscribed(message.bot, user_id):
         await message.answer(
-            f"🎉 **Verification Successful!**\n\nWelcome {first_name}! 👇\nEarning shuru karne ke liye option select karein:",
+            f"🎉 **Verification Successful!**\n\nWelcome {first_name}! 👇\n"
+            "Aaj ke tasks unlock karne ke liye **'🔄 Renew Task Today'** par click karein:",
             reply_markup=get_main_menu()
         )
     else:
-        # ❌ Not Verified: Join Button Dikhao
         await message.answer(
-            f"⚠️ **Action Required!**\n\nHello {first_name}, bot use karne ke liye hamara **Official Channel** join karna zaroori hai.\n\n👇 **Join karein aur Verify par click karein:**",
+            f"⚠️ **Action Required!**\n\nHello {first_name}, bot use karne ke liye hamara Channel join karna zaroori hai.",
             reply_markup=get_join_channel_kb()
         )
 
@@ -96,37 +91,29 @@ async def cmd_start(message: types.Message, state: FSMContext):
     # --- A. OLD USER ---
     if user:
         if user.get("is_banned", False):
-            await message.answer("🚫 **You are BANNED!**\nContact Admin.")
-            return
+            await message.answer("🚫 **You are BANNED!**\nContact Admin."); return
         
-        # Purana user hai -> Seedha Join Check par bhejo
+        # Purana user hai -> Join Check karo
         await check_and_show_dashboard(message, user_id, message.from_user.first_name)
         return
 
-    # --- B. NEW USER (Email Flow) ---
-    await message.answer(
-        "👋 **Welcome to Apex Earning Bot!**\n\n"
-        "Account create karne ke liye apna **Email** bhejein.\n"
-        "Example: `myemail@gmail.com`"
-    )
+    # --- B. NEW USER ---
+    await message.answer("👋 **Welcome!**\nAccount banane ke liye apna **Email** bhejein.")
     await state.set_state(UserState.waiting_for_email)
 
 # ==========================================
-# 2. EMAIL VERIFICATION -> THEN CHANNEL CHECK
+# 2. EMAIL FLOW
 # ==========================================
 @user_router.message(StateFilter(UserState.waiting_for_email))
 async def process_email(message: types.Message, state: FSMContext):
     email = message.text.strip()
-    
     if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
-        await message.answer("❌ Invalid Email! Try again.")
-        return
+        await message.answer("❌ Invalid Email."); return
 
-    # User Create
     await create_user(message.from_user.id, message.from_user.first_name, message.from_user.username, email)
     await state.clear()
     
-    # Account ban gaya -> Ab Join Check par bhejo
+    # Email done -> Check Join
     await check_and_show_dashboard(message, message.from_user.id, message.from_user.first_name)
 
 # ==========================================
@@ -137,73 +124,93 @@ async def verify_click(callback: types.CallbackQuery):
     if await is_user_subscribed(callback.bot, callback.from_user.id):
         await callback.message.delete()
         await callback.message.answer(
-            "✅ **Verified!** Access Granted.", 
+            "✅ **Verified!** Access Granted.\nAb **Renew Task Today** par click karein 👇", 
             reply_markup=get_main_menu()
         )
     else:
-        await callback.answer("❌ Join nahi kiya! Pehle Channel Join karein.", show_alert=True)
+        await callback.answer("❌ Join nahi kiya! Pehle Join Channel button dabayein.", show_alert=True)
 
 # ==========================================
-# 4. TASK LOGIC (Double Check)
+# 🔥 NEW: RENEW TASK BUTTON
+# ==========================================
+@user_router.message(F.text == "🔄 Renew Task Today")
+async def renew_task_click(message: types.Message):
+    user_id = message.from_user.id
+    
+    # 1. Database update karo (Aaj ki date save)
+    await mark_user_renewed(user_id)
+    
+    # 2. Channel Visit Button do
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📢 Visit Channel & Unlock", url=FORCE_SUB_LINK)
+    
+    await message.answer(
+        "🔄 **Renewing Your Tasks...**\n\n"
+        "Please niche diye gaye button par click karke **Channel Visit** karein.\n"
+        "Uske baad wapis aakar **🚀 Start Task** par click karein.",
+        reply_markup=kb.as_markup()
+    )
+
+# ==========================================
+# 4. TASK LOGIC (Double Security Check)
 # ==========================================
 @user_router.message(F.text == "🚀 Start Task")
 @user_router.message(Command("tasks"))
 async def cmd_get_task(message: types.Message):
-    # Security Check: Agar user join karke leave kar de
-    if not await is_user_subscribed(message.bot, message.from_user.id):
+    user_id = message.from_user.id
+
+    # CHECK 1: Force Subscribe (Agar leave kar diya ho)
+    if not await is_user_subscribed(message.bot, user_id):
         await message.answer("⚠️ **Alert:** Aapne Channel leave kar diya!\nJoin wapis karein:", reply_markup=get_join_channel_kb())
         return
 
-    user_id = message.from_user.id
-    user = await get_user(user_id)
-    if not user: await message.answer("⚠️ /start karein."); return
+    # CHECK 2: Renew Task Today (New Feature)
+    # Check karo user ne aaj Renew button dabaya hai ya nahi
+    if not await check_user_renewed_today(user_id):
+        await message.answer(
+            "🛑 **Tasks Locked!**\n\n"
+            "Aaj ke tasks unlock karne ke liye pehle **'🔄 Renew Task Today'** button par click karein.",
+            reply_markup=get_main_menu()
+        )
+        return
 
-    task, error_msg = await get_next_task_for_user(user_id)
-    if not task: await message.answer(f"⚠️ {error_msg}"); return
+    # CHECK 3: Fetch Task
+    task, err = await get_next_task_for_user(user_id)
+    if not task: await message.answer(f"⚠️ {err}"); return
 
-    task_id = str(task["_id"])
-    s_type = task["shortener_type"].upper()
-    
     kb = InlineKeyboardBuilder()
-    kb.button(text=f"🔗 Complete {s_type}", url=task["link"])
-    kb.button(text="✍️ Submit Code", callback_data=f"askcode_{task_id}")
+    kb.button(text=f"🔗 Complete {task['shortener_type'].upper()}", url=task["link"])
+    kb.button(text="✍️ Submit Code", callback_data=f"askcode_{str(task['_id'])}")
     kb.adjust(1)
     
     await message.answer(
         f"🎯 **Your Next Task**\n\n"
         f"📌 Title: {task['text']}\n"
-        f"⚡ Type: {s_type}\n"
+        f"⚡ Type: {task['shortener_type'].upper()}\n"
         f"💰 Reward: ₹{task['reward']}\n\n"
         "Link open karein aur code copy karke layein.",
         reply_markup=kb.as_markup()
     )
 
-# --- Task Code Logic (Same as before) ---
+# --- Code Submission ---
 @user_router.callback_query(F.data.startswith("askcode_"))
-async def ask_for_code(callback: types.CallbackQuery, state: FSMContext):
-    task_id = callback.data.split("_")[1]
-    await state.update_data(task_id=task_id)
-    await state.set_state(UserState.waiting_for_task_code)
-    await callback.message.answer("⌨️ **Enter Verification Code:**")
-    await callback.answer()
+async def ask_code(c: types.CallbackQuery, state: FSMContext):
+    await state.update_data(tid=c.data.split("_")[1]); await state.set_state(UserState.waiting_for_task_code)
+    await c.message.answer("⌨️ Code:"); await c.answer()
 
 @user_router.message(StateFilter(UserState.waiting_for_task_code))
-async def verify_code(message: types.Message, state: FSMContext):
-    user_input = message.text.strip()
-    data = await state.get_data()
-    task = await get_task_details(data.get("task_id"))
+async def verify_code(m: types.Message, state: FSMContext):
+    d = await state.get_data(); t = await get_task_details(d.get("tid"))
+    if not t: await m.answer("Expired."); await state.clear(); return
     
-    if not task: await message.answer("❌ Task expired."); await state.clear(); return
-
-    if user_input == task.get("verification_code"):
-        success = await mark_task_complete(message.from_user.id, data.get("task_id"), task["reward"])
-        if success: await message.answer(f"✅ **Correct!** ₹{task['reward']} added.")
-        else: await message.answer("⚠️ Already completed.")
-    else: await message.answer("❌ Wrong Code.")
+    if m.text.strip() == t["verification_code"]:
+        if await mark_task_complete(m.from_user.id, str(t["_id"]), t["reward"]): await m.answer("✅ Added.")
+        else: await m.answer("⚠️ Done.")
+    else: await m.answer("❌ Wrong.")
     await state.clear()
 
 # ==========================================
-# 5. BALANCE
+# 5. BALANCE & HELP
 # ==========================================
 @user_router.message(F.text == "💰 My Balance")
 @user_router.message(Command("balance"))
@@ -220,22 +227,9 @@ async def cmd_balance(message: types.Message):
     )
     await message.answer(msg)
 
-# ==========================================
-# 6. HELP & SUPPORT BOT
-# ==========================================
 @user_router.message(F.text == "ℹ️ Help / Rules")
 @user_router.message(Command("help"))
 async def cmd_help(message: types.Message):
-    # Support button
     kb = InlineKeyboardBuilder()
-    if SUPPORT_BOT_USERNAME:
-        kb.button(text="👨‍💻 Contact Support", url=f"https://t.me/{SUPPORT_BOT_USERNAME}")
-    
-    await message.answer(
-        "ℹ️ **Help & Rules**\n\n"
-        "1. Daily 6 tasks allowed.\n"
-        "2. Complete tasks sequentially (GP -> ShrinkMe).\n"
-        "3. Do not use fake accounts or VPN.\n"
-        "4. Payment process ke liye admin se contact karein.",
-        reply_markup=kb.as_markup()
-    )
+    if SUPPORT_BOT_USERNAME: kb.button(text="👨‍💻 Contact Support", url=f"https://t.me/{SUPPORT_BOT_USERNAME}")
+    await message.answer("ℹ️ **Rules:**\n1. Renew daily.\n2. No Cheating.", reply_markup=kb.as_markup())
