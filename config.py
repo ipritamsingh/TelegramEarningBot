@@ -2,7 +2,8 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-
+# Admin Bot Token (Naya Wala)
+ADMIN_BOT_TOKEN = os.getenv("ADMIN_BOT_TOKEN")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
@@ -22,3 +23,6 @@ SHORTENER_CONFIG = {
         "key": os.getenv("DROPLINK_KEY")
     }
 }
+
+
+
