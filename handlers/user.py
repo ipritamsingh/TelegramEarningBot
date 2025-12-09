@@ -130,8 +130,8 @@ async def unlock_task_request(message: types.Message):
         reply_markup=kb_initial.as_markup()
     )
 
-    # 3. Wait for 3 Seconds (Simulating user clicking the link)
-    await asyncio.sleep(3)
+    # 3. Wait for 10 Seconds (Simulating user clicking the link)
+    await asyncio.sleep(10)
 
     # 4. Message Update Karo (Ab Confirm button add kar do)
     kb_final = InlineKeyboardBuilder()
