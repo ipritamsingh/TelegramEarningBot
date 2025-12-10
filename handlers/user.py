@@ -354,10 +354,23 @@ async def process_withdraw_req(m: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # 1. Deduct Balance (Pending State)
+# 1. Deduct Balance (Pending State)
     result = await process_withdrawal(user_id, balance, upi_id)
+
+    # --- UPDATED LOGIC ---
+    is_success = False
     
-    if result == "SUCCESS" or (isinstance(result, tuple) and result[0] == "SUCCESS_WITH_BONUS"):
+    # Check 1: Agar seedha String "SUCCESS" ho
+    if result == "SUCCESS":
+        is_success = True
+    
+    # Check 2: Agar Tuple ho (e.g., ('SUCCESS', None) ya ('SUCCESS_WITH_BONUS', amt))
+    elif isinstance(result, tuple) and result[0] in ["SUCCESS", "SUCCESS_WITH_BONUS"]:
+        is_success = True
+    # ---------------------
+
+    if is_success:
+        # ... (Baaki code same rahega: User ko msg aur Admin ko request) ...
         
         # 2. User Notification (Pending)
         await m.answer(
