@@ -39,11 +39,17 @@ class UserState(StatesGroup):
 
 def get_main_menu():
     kb = ReplyKeyboardBuilder()
+    # Row 1
     kb.button(text="🔓 Unlock Task Today") 
+    # Row 2
     kb.button(text="🚀 Start Task")
+    # Row 3 (New Buttons)
     kb.button(text="💰 Wallet / Withdraw")
     kb.button(text="🤝 Invite & Earn")
+    # Row 4
     kb.button(text="ℹ️ Help / Rules")
+    
+    # Layout set karo (1, 1, 2, 1)
     kb.adjust(1, 1, 2, 1)
     return kb.as_markup(resize_keyboard=True)
 
@@ -90,9 +96,11 @@ async def cmd_start(message: types.Message, command: CommandObject, state: FSMCo
         if user.get("is_banned", False):
             await message.answer("🚫 **You are BANNED!**\nContact Admin."); return
         
+        # Agar user purana hai to Menu refresh kar do
         await message.answer(f"Welcome back, {message.from_user.first_name}!", reply_markup=get_main_menu())
         return
 
+    # Store Referral ID if present
     referrer_id = command.args
     if referrer_id and str(referrer_id) != str(user_id):
         await state.update_data(referrer_id=referrer_id)
@@ -109,6 +117,7 @@ async def process_email(message: types.Message, state: FSMContext):
     if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
         await message.answer("❌ Invalid Email."); return
 
+    # Get Referral Data
     data = await state.get_data()
     referrer_id = data.get("referrer_id")
 
@@ -133,13 +142,16 @@ async def verify_click(callback: types.CallbackQuery):
 # ==========================================
 @user_router.message(F.text == "🔓 Unlock Task Today")
 async def unlock_task_request(message: types.Message):
+    # 1. Link Preparation
     channel_link = str(FORCE_SUB_LINK).strip()
     if not channel_link.startswith("http"):
         channel_link = f"https://{channel_link}"
     
+    # 2. Initial Button (Only Red Button)
     kb_initial = InlineKeyboardBuilder()
     kb_initial.button(text="🔴 Open & Unlock", url=channel_link)
     
+    # Send Message
     msg = await message.answer(
         "🔒 **Unlock Process Started...**\n\n"
         "1️⃣ Upar **Red Button** par click karein aur Channel me **Check-in Code** dekhein.\n"
@@ -147,8 +159,10 @@ async def unlock_task_request(message: types.Message):
         reply_markup=kb_initial.as_markup()
     )
 
+    # 3. Wait for 3 Seconds
     await asyncio.sleep(3)
 
+    # 4. Update Message (Show Submit Button)
     kb_final = InlineKeyboardBuilder()
     kb_final.button(text="🔴 Open & Unlock", url=channel_link)
     kb_final.button(text="✅ Submit & Unlock", callback_data="ask_daily_code")
@@ -159,12 +173,14 @@ async def unlock_task_request(message: types.Message):
     except:
         pass 
 
+# --- ASK CODE HANDLER ---
 @user_router.callback_query(F.data == "ask_daily_code")
 async def ask_checkin_code(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(UserState.waiting_for_daily_checkin_code)
     await c.message.answer("⌨️ **Enter Today's Check-in Code:**\n(Jo aapne channel par dekha)")
     await c.answer()
 
+# --- VERIFY CODE HANDLER ---
 @user_router.message(StateFilter(UserState.waiting_for_daily_checkin_code))
 async def verify_daily_code(m: types.Message, state: FSMContext):
     user_input = m.text.strip()
@@ -199,6 +215,7 @@ async def cmd_get_task(message: types.Message):
         await message.answer("⚠️ **Alert:** Channel Left! Join wapis karein:", reply_markup=get_join_channel_kb())
         return
 
+    # Unlock Check
     if not await check_user_renewed_today(user_id):
         await message.answer(
             "🛑 **Tasks Locked!**\n\n"
@@ -289,9 +306,15 @@ async def ask_upi(c: types.CallbackQuery, state: FSMContext):
         kb = InlineKeyboardBuilder()
         if SUPPORT_BOT_USERNAME:
             kb.button(text="👨‍💻 Contact Support", url=f"https://t.me/{SUPPORT_BOT_USERNAME}")
-        await c.message.answer("🚫 **ACCOUNT BANNED!**\n\nAap withdraw nahi kar sakte kyunki aapne rules tode hain.\nAdmin se baat karein.", reply_markup=kb.as_markup())
-        await c.answer()
-        return
+        
+        await c.message.answer(
+            "🚫 **ACCOUNT BANNED!**\n\n"
+            "Aap withdraw nahi kar sakte kyunki aapne rules tode hain.\n"
+            "Admin se baat karein.", 
+            reply_markup=kb.as_markup()
+        )
+        await c.answer() # Close popup
+        return # Stop execution
 
     await state.set_state(UserState.waiting_for_upi_id)
     await c.message.answer(
@@ -331,29 +354,26 @@ async def process_withdraw_req(m: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # 1. Deduct Balance (Database)
+    # 1. Deduct Balance (Pending State)
     result = await process_withdrawal(user_id, balance, upi_id)
     
     if result == "SUCCESS" or (isinstance(result, tuple) and result[0] == "SUCCESS_WITH_BONUS"):
         
-        # 2. Show Pending Message to User
+        # 2. User Notification (Pending)
         await m.answer(
-            "⏳ **Withdrawal Request Submitted!**\n"
-            "━━━━━━━━━━━━━━━━\n"
+            "⏳ **Request Submitted!**\n\n"
             f"💰 Amount: ₹{balance}\n"
             f"🏦 UPI: `{upi_id}`\n\n"
-            "✅ Request Admin ko bhej di gayi hai.\n"
-            "Approval ke baad 'Payment Successful' ka message aayega.",
+            "✅ Admin ko bhej diya gaya hai.\nApproval ka wait karein.",
             reply_markup=get_main_menu()
         )
         
-        # 3. Send Request to Admin Group (Use ADMIN BOT TOKEN)
+        # 3. Admin Notification (Private Group)
         if PAYMENT_LOG_CHANNEL and ADMIN_BOT_TOKEN:
             try:
-                # Create Admin Bot Instance
+                # Use Admin Bot to send msg
                 admin_bot = Bot(token=ADMIN_BOT_TOKEN)
                 
-                # Buttons for Admin
                 kb = InlineKeyboardBuilder()
                 kb.button(text="✅ Approve", callback_data=f"wd_y_{user_id}_{balance}")
                 kb.button(text="❌ Decline", callback_data=f"wd_n_{user_id}_{balance}")
@@ -372,10 +392,10 @@ async def process_withdraw_req(m: types.Message, state: FSMContext):
                 )
                 
                 await admin_bot.send_message(chat_id=PAYMENT_LOG_CHANNEL, text=msg_text, reply_markup=kb.as_markup())
-                await admin_bot.session.close() # Close session properly
+                await admin_bot.session.close() # Important
                 
             except Exception as e:
-                print(f"❌ Admin Notification Failed: {e}")
+                print(f"❌ Admin Notification Error: {e}")
         
     else:
         await m.answer(f"❌ Error: {result}")
@@ -400,12 +420,6 @@ async def invite_menu(message: types.Message):
     kb = InlineKeyboardBuilder()
     kb.button(text="📤 Share", url=f"https://t.me/share/url?url={ref_link}&text=Join Now!")
     await message.answer(msg, reply_markup=kb.as_markup())
-
-# @user_router.message(F.text == "ℹ️ Help / Rules")
-# async def cmd_help(message: types.Message):
-#     kb = InlineKeyboardBuilder()
-#     if SUPPORT_BOT_USERNAME: kb.button(text="👨‍💻 Support", url=f"https://t.me/{SUPPORT_BOT_USERNAME}")
-#     await message.answer("📜 **Rules:** No Fakes.", reply_markup=kb.as_markup())
 
 @user_router.message(F.text == "ℹ️ Help / Rules")
 async def cmd_help(message: types.Message):
