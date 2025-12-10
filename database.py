@@ -74,7 +74,7 @@ async def create_user(user_id, first_name, username, email, referrer_id=None):
         )
 
 # ==========================================
-# WITHDRAWAL & REFERRAL BONUS LOGIC
+# WITHDRAWAL & REFERRAL BONUS LOGIC (New)
 # ==========================================
 
 async def process_withdrawal(user_id, amount, upi_id):
@@ -124,6 +124,23 @@ async def process_withdrawal(user_id, amount, upi_id):
     if referrer_id_bonus:
         return "SUCCESS_WITH_BONUS", referrer_id_bonus
     return "SUCCESS", None
+
+async def credit_referral_bonus(referrer_id, reward):
+    """Referrer ko bonus dene ke liye helper function (Direct)"""
+    result = await users_col.update_one(
+        {"user_id": int(referrer_id)},
+        {
+            "$inc": {"balance": float(reward), "referral_earnings": float(reward)}
+        }
+    )
+    return result.modified_count > 0
+
+async def get_user_referral_stats(user_id):
+    """Invite page ke liye stats"""
+    user = await users_col.find_one({"user_id": int(user_id)})
+    if user:
+        return user.get("referral_count", 0)
+    return 0
 
 # ==========================================
 # TASK LOGIC (Smart Allocator)
