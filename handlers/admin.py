@@ -15,10 +15,10 @@ from database import (
     admin_add_balance, 
     get_all_user_ids,
     set_daily_checkin_code,
-    refund_user_balance # <--- Zaroori hai Decline feature ke liye
+    refund_user_balance # Required for decline
 )
 from utils import shorten_link
-from config import ADMIN_IDS, BOT_TOKEN # <--- User Bot Token chahiye notification ke liye
+from config import ADMIN_IDS, BOT_TOKEN # User Bot Token for notification
 
 admin_router = Router()
 
@@ -63,6 +63,7 @@ async def admin_dashboard(message: types.Message, state: FSMContext):
     if not is_auth(message.from_user.id): return
     await state.clear() 
 
+    # Unpack 4 values (active_today added)
     users, balance, tasks, active_today = await get_system_stats()
     
     msg = (
@@ -147,9 +148,9 @@ async def set_code_and_ask_type(m: types.Message, state: FSMContext):
     await state.update_data(code=m.text.strip())
     kb = InlineKeyboardBuilder()
     kb.button(text="🌍 All 3 (Bulk)", callback_data="create_all")
-    kb.button(text="1️⃣ GPLinks", callback_data="create_gplinks")
-    kb.button(text="2️⃣ ShrinkMe", callback_data="create_shrinkme")
-    kb.button(text="3️⃣ ShrinkEarn", callback_data="create_shrinkearn")
+    kb.button(text="1️⃣ GPLinks Only", callback_data="create_gplinks")
+    kb.button(text="2️⃣ ShrinkMe Only", callback_data="create_shrinkme")
+    kb.button(text="3️⃣ ShrinkEarn Only", callback_data="create_shrinkearn")
     kb.button(text="❌ Cancel", callback_data="btn_cancel")
     kb.adjust(1)
     await m.answer("❓ **Which Shortener?**", reply_markup=kb.as_markup())
