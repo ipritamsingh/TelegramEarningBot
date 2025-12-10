@@ -399,7 +399,8 @@ async def process_withdraw_req(m: types.Message, state: FSMContext):
                     f"📧 Email: {user.get('email')}\n"
                     f"🆔 ID: `{user_id}`\n"
                     f"💰 Amount: **₹{balance}**\n"
-                    f"🏦 UPI: `{upi_id}`\n"
+                    # f"🏦 UPI: `{upi_id}`\n"
+                      f"🏦 UPI: ``{upi_id}``\n"
                     f"📅 Joined: {user.get('joining_date')}\n"
                     f"⚠️ Status: {'BANNED' if user.get('is_banned') else 'Active'}"
                 )
