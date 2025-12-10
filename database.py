@@ -24,7 +24,7 @@ else:
         client = None
 
 # ==========================================
-# USER FUNCTIONS (User Bot ke liye)
+# USER FUNCTIONS
 # ==========================================
 
 async def get_user(user_id):
@@ -46,10 +46,10 @@ async def is_email_registered(email):
 # -----------------------------------------
 
 async def create_user(user_id, first_name, username, email, referrer_id=None):
-    """Naya User create karega (With Referral Support)"""
+    """Naya User create karega"""
     if users_col is None: return
 
-    # Check agar user pehle se hai (Double Safety)
+    # Check agar user pehle se hai
     existing = await users_col.find_one({"user_id": int(user_id)})
     if existing: return
 
@@ -82,11 +82,11 @@ async def create_user(user_id, first_name, username, email, referrer_id=None):
         )
 
 # ==========================================
-# WITHDRAWAL & REFERRAL BONUS LOGIC (New)
+# WITHDRAWAL LOGIC (Bonus Removed)
 # ==========================================
 
 async def process_withdrawal(user_id, amount, upi_id):
-    """Withdraw request process karega aur Referrer ko bonus dega"""
+    """Withdraw request process karega (Bonus removed from here)"""
     user = await users_col.find_one({"user_id": int(user_id)})
     if not user: return "User not found"
     
@@ -114,29 +114,13 @@ async def process_withdrawal(user_id, amount, upi_id):
         }
     )
     
-    # REFERRAL BONUS (Only on First Withdraw)
-    referrer_id_bonus = None
-    if withdraw_count == 0 and user.get("referred_by"):
-        referrer_id = user.get("referred_by")
-        from config import REFERRAL_REWARD # Import inside to avoid circular error
-        
-        # Credit Bonus to Referrer
-        await users_col.update_one(
-            {"user_id": int(referrer_id)},
-            {
-                "$inc": {"balance": float(REFERRAL_REWARD), "referral_earnings": float(REFERRAL_REWARD)}
-                "$set": {"last_withdraw_upi": upi_id}
-            }
-        )
-    #     referrer_id_bonus = referrer_id
-        
-    # if referrer_id_bonus:
-    #     return "SUCCESS_WITH_BONUS", referrer_id_bonus
-    # return "SUCCESS", None
-return "SUCCESS"
+    # Bonus Logic Removed from Here (Moved to Admin Approval)
+    
+    return "SUCCESS" 
 
 async def credit_referral_bonus(referrer_id, reward):
-    """Referrer ko bonus dene ke liye helper function (Direct)"""
+    """Referrer ko bonus dene ke liye helper function"""
+    # Yahan dhyan dein: Hum 'reward' variable use kar rahe hain, REFERRAL_REWARD nahi
     result = await users_col.update_one(
         {"user_id": int(referrer_id)},
         {
@@ -153,11 +137,10 @@ async def get_user_referral_stats(user_id):
     return 0
 
 # ==========================================
-# TASK LOGIC (Smart Allocator)
+# TASK LOGIC
 # ==========================================
 
 async def add_bulk_task(text, reward, short_link, code, shortener_type):
-    """Admin jab task add karega"""
     task_data = {
         "text": text,
         "reward": float(reward),
@@ -169,7 +152,6 @@ async def add_bulk_task(text, reward, short_link, code, shortener_type):
     await tasks_col.insert_one(task_data)
 
 async def get_next_task_for_user(user_id):
-    """User ke liye next task dhundega based on Sequence"""
     user_id = int(user_id)
     user = await users_col.find_one({"user_id": user_id})
     
@@ -242,7 +224,6 @@ async def mark_task_complete(user_id, task_id, reward):
 # ==========================================
 
 async def set_daily_checkin_code(code):
-    """Admin sets daily code"""
     await settings_col.update_one(
         {"_id": "daily_code"}, 
         {"$set": {"value": code}}, 
@@ -251,12 +232,10 @@ async def set_daily_checkin_code(code):
     return True
 
 async def get_daily_checkin_code():
-    """Fetch daily code for verification"""
     data = await settings_col.find_one({"_id": "daily_code"})
     return data['value'] if data else None
 
 async def mark_user_renewed(user_id):
-    """User ne aaj unlock kar liya"""
     today_str = datetime.now().strftime("%Y-%m-%d")
     await users_col.update_one(
         {"user_id": int(user_id)},
@@ -265,7 +244,6 @@ async def mark_user_renewed(user_id):
     return True
 
 async def check_user_renewed_today(user_id):
-    """Check status"""
     user = await users_col.find_one({"user_id": int(user_id)})
     if not user: return False
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -276,16 +254,13 @@ async def check_user_renewed_today(user_id):
 # ==========================================
 
 async def get_system_stats():
-    """Dashboard Stats + Today Active Users"""
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     total_users = await users_col.count_documents({})
     total_tasks = await tasks_col.count_documents({})
     
-    # Active Users (Renewed Today)
     active_today = await users_col.count_documents({"last_renew_date": today_str})
     
-    # Total Balance
     pipeline = [{"$group": {"_id": None, "total": {"$sum": "$balance"}}}]
     res = await users_col.aggregate(pipeline).to_list(1)
     total_balance = res[0]['total'] if res else 0.0
@@ -315,9 +290,6 @@ async def get_all_user_ids():
     users = await users_col.find({}, {"user_id": 1}).to_list(None)
     return [u['user_id'] for u in users]
 
-    # ... Upar ka code same rahega ...
-
-# --- NEW: REFUND LOGIC (For Admin Decline) ---
 async def refund_user_balance(user_id, amount):
     """Agar Admin decline kare to paisa wapis add karo"""
     await users_col.update_one(
