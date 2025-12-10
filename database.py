@@ -304,3 +304,16 @@ async def admin_add_balance(user_id, amount):
 async def get_all_user_ids():
     users = await users_col.find({}, {"user_id": 1}).to_list(None)
     return [u['user_id'] for u in users]
+
+    # ... Upar ka code same rahega ...
+
+# --- NEW: REFUND LOGIC (For Admin Decline) ---
+async def refund_user_balance(user_id, amount):
+    """Agar Admin decline kare to paisa wapis add karo"""
+    await users_col.update_one(
+        {"user_id": int(user_id)},
+        {
+            "$inc": {"balance": float(amount), "total_withdrawn": -float(amount), "withdraw_count": -1}
+        }
+    )
+    return True

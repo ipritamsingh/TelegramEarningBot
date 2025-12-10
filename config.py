@@ -34,4 +34,5 @@ SHORTENER_CONFIG = {
 REFERRAL_REWARD = 5.0      # Refer karne wale ko ₹5 milenge (Jab dost withdraw karega)
 MIN_WITHDRAW_FIRST = 2.0   # Pehla withdraw ₹2 par
 MIN_WITHDRAW_NEXT = 20.0   # Uske baad ₹20 par
-
+# ... Purane imports ...
+PAYMENT_LOG_CHANNEL = os.getenv("PAYMENT_LOG_CHANNEL") # <--- Ye line add karein
