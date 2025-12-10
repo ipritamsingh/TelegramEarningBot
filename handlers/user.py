@@ -1,7 +1,7 @@
 import re
 import asyncio # Required for delay
 from aiogram import Router, types, F
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command, StateFilter, CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
@@ -13,9 +13,12 @@ from database import (
     mark_task_complete,
     mark_user_renewed,
     check_user_renewed_today,
-    get_daily_checkin_code # Ensure this exists in database.py
+    get_daily_checkin_code,
+    credit_referral_bonus,
+    get_user_referral_stats,
+    process_withdrawal
 )
-from config import FORCE_SUB_CHANNEL_ID, FORCE_SUB_LINK, SUPPORT_BOT_USERNAME
+from config import FORCE_SUB_CHANNEL_ID, FORCE_SUB_LINK, SUPPORT_BOT_USERNAME, REFERRAL_REWARD, MIN_WITHDRAW_FIRST, MIN_WITHDRAW_NEXT
 
 user_router = Router()
 
@@ -24,6 +27,7 @@ class UserState(StatesGroup):
     waiting_for_email = State()
     waiting_for_task_code = State()
     waiting_for_daily_checkin_code = State() # For daily unlock code
+    waiting_for_upi_id = State()
 
 # ==========================================
 # 🛠️ HELPERS
@@ -33,9 +37,10 @@ def get_main_menu():
     kb = ReplyKeyboardBuilder()
     kb.button(text="🔓 Unlock Task Today") 
     kb.button(text="🚀 Start Task")
-    kb.button(text="💰 My Balance")
+    kb.button(text="💰 Wallet / Withdraw")
+    kb.button(text="🤝 Invite & Earn")
     kb.button(text="ℹ️ Help / Rules")
-    kb.adjust(1, 2, 1)
+    kb.adjust(1, 1, 2, 1)
     return kb.as_markup(resize_keyboard=True)
 
 def get_join_channel_kb():
@@ -72,8 +77,8 @@ async def check_and_show_dashboard(message, user_id, first_name):
 # ==========================================
 # 1. START COMMAND
 # ==========================================
-@user_router.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
+@user_router.message(CommandStart())
+async def cmd_start(message: types.Message, command: CommandObject, state: FSMContext):
     user_id = message.from_user.id
     user = await get_user(user_id)
 
@@ -82,6 +87,11 @@ async def cmd_start(message: types.Message, state: FSMContext):
             await message.answer("🚫 **You are BANNED!**\nContact Admin."); return
         await check_and_show_dashboard(message, user_id, message.from_user.first_name)
         return
+
+    # Store Referral ID
+    referrer_id = command.args
+    if referrer_id and str(referrer_id) != str(user_id):
+        await state.update_data(referrer_id=referrer_id)
 
     await message.answer("👋 **Welcome!**\nAccount banane ke liye apna **Email** bhejein.")
     await state.set_state(UserState.waiting_for_email)
@@ -95,7 +105,10 @@ async def process_email(message: types.Message, state: FSMContext):
     if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
         await message.answer("❌ Invalid Email."); return
 
-    await create_user(message.from_user.id, message.from_user.first_name, message.from_user.username, email)
+    data = await state.get_data()
+    referrer_id = data.get("referrer_id")
+
+    await create_user(message.from_user.id, message.from_user.first_name, message.from_user.username, email, referrer_id)
     await state.clear()
     await check_and_show_dashboard(message, message.from_user.id, message.from_user.first_name)
 
@@ -210,7 +223,7 @@ async def cmd_get_task(message: types.Message):
     if not task: await message.answer(f"⚠️ {err}"); return
 
     kb = InlineKeyboardBuilder()
-    kb.button(text=f"🔗 Complete {task['shortener_type'].upper()}", url=task["link"])
+    kb.button(text=f"🔗 Complete Task", url=task["link"])
     kb.button(text="✍️ Submit Code", callback_data=f"askcode_{str(task['_id'])}")
     kb.adjust(1)
     
@@ -227,7 +240,7 @@ async def cmd_get_task(message: types.Message):
 @user_router.callback_query(F.data.startswith("askcode_"))
 async def ask_code(c: types.CallbackQuery, state: FSMContext):
     await state.update_data(tid=c.data.split("_")[1]); await state.set_state(UserState.waiting_for_task_code)
-    await c.message.answer("⌨️ Task Code:"); await c.answer()
+    await c.message.answer("⌨️ Code:"); await c.answer()
 
 @user_router.message(StateFilter(UserState.waiting_for_task_code))
 async def verify_task_code(m: types.Message, state: FSMContext):
@@ -241,21 +254,100 @@ async def verify_task_code(m: types.Message, state: FSMContext):
     await state.clear()
 
 # ==========================================
-# 5. BALANCE & HELP
+# 5. INVITE & EARN
 # ==========================================
-@user_router.message(F.text == "💰 My Balance")
-async def cmd_balance(message: types.Message):
+@user_router.message(F.text == "🤝 Invite & Earn")
+async def invite_menu(message: types.Message):
+    user_id = message.from_user.id
+    user = await get_user(user_id)
+    bot_info = await message.bot.get_me()
+    
+    ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
+    
+    msg = (
+        "🤝 **REFER & EARN PROGRAM**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 **Reward:** ₹{REFERRAL_REWARD} per Active Refer\n"
+        "*(Note: Bonus tab milega jab aapka dost first withdraw karega)*\n\n"
+        f"🔗 **Your Link:**\n`{ref_link}`\n\n"
+        "📊 **Your Performance:**\n"
+        f"👥 Total Joined: `{user.get('referral_count', 0)}`\n"
+        f"💸 Bonus Earned: `₹{user.get('referral_earnings', 0):.2f}`\n\n"
+        "⚠️ **Terms:** Fake referrals leads to Ban."
+    )
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📤 Share Link", url=f"https://t.me/share/url?url={ref_link}&text=Earn Free Money Daily! Join Now.")
+    await message.answer(msg, reply_markup=kb.as_markup())
+
+# ==========================================
+# 6. WALLET & WITHDRAW
+# ==========================================
+@user_router.message(F.text == "💰 Wallet / Withdraw")
+async def wallet_menu(message: types.Message):
     user = await get_user(message.from_user.id)
     if not user: return
 
+    bal = user.get('balance', 0.0)
+    w_count = user.get('withdraw_count', 0)
+    limit = MIN_WITHDRAW_FIRST if w_count == 0 else MIN_WITHDRAW_NEXT
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💸 Withdraw Now", callback_data="req_withdraw")
+    
     msg = (
-        f"👤 **{user['first_name']}**\n"
-        f"📧 {user.get('email')}\n"
-        f"-----------------\n"
-        f"💰 **Balance: ₹{user.get('balance', 0.0):.2f}**\n"
-        f"✅ Tasks Today: {user.get('daily_task_count', 0)}/6"
+        "💰 **YOUR WALLET**\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"💵 **Current Balance:** ₹{bal:.2f}\n"
+        f"🏧 **Total Withdrawn:** ₹{user.get('total_withdrawn', 0):.2f}\n\n"
+        "⚠️ **Withdrawal Rules:**\n"
+        f"🔹 First Withdraw Limit: ₹{MIN_WITHDRAW_FIRST}\n"
+        f"🔹 Next Withdraw Limit: ₹{MIN_WITHDRAW_NEXT}\n\n"
+        "👇 Click below to Withdraw:"
     )
-    await message.answer(msg)
+    await message.answer(msg, reply_markup=kb.as_markup())
+
+@user_router.callback_query(F.data == "req_withdraw")
+async def ask_upi(c: types.CallbackQuery, state: FSMContext):
+    await state.set_state(UserState.waiting_for_upi_id)
+    await c.message.answer("⌨️ **Enter your UPI ID / Number:**\n(e.g., `8888888888@paytm`)")
+    await c.answer()
+
+@user_router.message(StateFilter(UserState.waiting_for_upi_id))
+async def process_withdraw_req(m: types.Message, state: FSMContext):
+    upi_id = m.text.strip()
+    user_id = m.from_user.id
+    user = await get_user(user_id)
+    
+    limit = MIN_WITHDRAW_FIRST if user.get('withdraw_count', 0) == 0 else MIN_WITHDRAW_NEXT
+    balance = user.get('balance', 0)
+    
+    if balance < limit:
+        await m.answer(f"❌ **Low Balance!**\nMin Withdraw: ₹{limit}")
+        await state.clear()
+        return
+
+    result = await process_withdrawal(user_id, balance, upi_id)
+    
+    if isinstance(result, tuple) and result[0] == "SUCCESS_WITH_BONUS":
+        referrer_id = result[1]
+        try:
+            await m.bot.send_message(referrer_id, f"🎉 **Referral Bonus!**\nFriend withdrew.\n**+₹{REFERRAL_REWARD}** added.")
+        except: pass
+        await m.answer(f"✅ **Withdrawal Successful!**\n₹{balance} sent to `{upi_id}`.")
+    
+    elif result == "SUCCESS":
+        await m.answer(f"✅ **Withdrawal Successful!**\n₹{balance} sent to `{upi_id}`.")
+    else:
+        await m.answer(f"❌ **Error:** {result}")
+    
+    await state.clear()
+
+# @user_router.message(F.text == "ℹ️ Help / Rules")
+# async def cmd_help(message: types.Message):
+#     kb = InlineKeyboardBuilder()
+#     if SUPPORT_BOT_USERNAME: kb.button(text="👨‍💻 Support", url=f"https://t.me/{SUPPORT_BOT_USERNAME}")
+#     await message.answer("📜 **Rules:** No Fake Work.", reply_markup=kb.as_markup())
 
 @user_router.message(F.text == "ℹ️ Help / Rules")
 async def cmd_help(message: types.Message):

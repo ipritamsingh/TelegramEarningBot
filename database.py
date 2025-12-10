@@ -9,6 +9,7 @@ if not MONGO_URI:
     client = None
     users_col = None
     tasks_col = None
+    settings_col = None
     logging.error("❌ MONGO_URI missing in config!")
 else:
     try:
@@ -16,6 +17,7 @@ else:
         db = client['ApexDigitalDB']
         users_col = db['users']
         tasks_col = db['tasks']
+        settings_col = db['settings'] # For Daily Code
         logging.info("✅ MongoDB Connected Successfully!")
     except Exception as e:
         logging.error(f"❌ MongoDB Connection Failed: {e}")
@@ -30,14 +32,18 @@ async def get_user(user_id):
     if users_col is None: return None
     return await users_col.find_one({"user_id": int(user_id)})
 
-async def create_user(user_id, first_name, username, email):
-    """Naya User create karega"""
+async def get_user_by_email(email):
+    """Email se user dhundne ke liye"""
+    if users_col is None: return None
+    return await users_col.find_one({"email": email})
+
+async def create_user(user_id, first_name, username, email, referrer_id=None):
+    """Naya User create karega (With Referral Support)"""
     if users_col is None: return
 
     # Check agar user pehle se hai (Double Safety)
     existing = await users_col.find_one({"user_id": int(user_id)})
-    if existing:
-        return
+    if existing: return
 
     new_user = {
         "user_id": int(user_id),
@@ -46,14 +52,78 @@ async def create_user(user_id, first_name, username, email):
         "email": email,
         "balance": 0.0,
         "total_withdrawn": 0.0,
+        "withdraw_count": 0,
+        "referred_by": int(referrer_id) if referrer_id else None,
+        "referral_count": 0,
+        "referral_earnings": 0.0,
         "is_banned": False,
         "joining_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "last_active_date": None,
+        "last_renew_date": None, # For Daily Unlock
         "daily_task_count": 0,
         "daily_completed_tasks": []
     }
     await users_col.insert_one(new_user)
     logging.info(f"🆕 New User Registered: {user_id}")
+
+    # Referrer Count Update (Bonus abhi nahi milega)
+    if referrer_id:
+        await users_col.update_one(
+            {"user_id": int(referrer_id)},
+            {"$inc": {"referral_count": 1}}
+        )
+
+# ==========================================
+# WITHDRAWAL & REFERRAL BONUS LOGIC
+# ==========================================
+
+async def process_withdrawal(user_id, amount, upi_id):
+    """Withdraw request process karega aur Referrer ko bonus dega"""
+    user = await users_col.find_one({"user_id": int(user_id)})
+    if not user: return "User not found"
+    
+    current_balance = user.get("balance", 0.0)
+    withdraw_count = user.get("withdraw_count", 0)
+    
+    # Limits Check
+    if withdraw_count == 0:
+        min_limit = 2.0  # First Time
+    else:
+        min_limit = 20.0 # Next Time
+        
+    if current_balance < min_limit:
+        return f"❌ Low Balance! Minimum withdraw: ₹{min_limit}"
+    
+    if amount > current_balance:
+        return "❌ Insufficient funds."
+
+    # Deduct User Balance
+    await users_col.update_one(
+        {"user_id": int(user_id)},
+        {
+            "$inc": {"balance": -float(amount), "total_withdrawn": float(amount), "withdraw_count": 1},
+            "$set": {"last_withdraw_upi": upi_id}
+        }
+    )
+    
+    # REFERRAL BONUS (Only on First Withdraw)
+    referrer_id_bonus = None
+    if withdraw_count == 0 and user.get("referred_by"):
+        referrer_id = user.get("referred_by")
+        from config import REFERRAL_REWARD # Import inside to avoid circular error
+        
+        # Credit Bonus to Referrer
+        await users_col.update_one(
+            {"user_id": int(referrer_id)},
+            {
+                "$inc": {"balance": float(REFERRAL_REWARD), "referral_earnings": float(REFERRAL_REWARD)}
+            }
+        )
+        referrer_id_bonus = referrer_id
+        
+    if referrer_id_bonus:
+        return "SUCCESS_WITH_BONUS", referrer_id_bonus
+    return "SUCCESS", None
 
 # ==========================================
 # TASK LOGIC (Smart Allocator)
@@ -81,7 +151,7 @@ async def get_next_task_for_user(user_id):
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     
-    # --- 1. DAILY RESET LOGIC ---
+    # Daily Reset Logic
     if user.get("last_active_date") != today_str:
         await users_col.update_one(
             {"user_id": user_id},
@@ -97,28 +167,23 @@ async def get_next_task_for_user(user_id):
         daily_count = user.get("daily_task_count", 0)
         completed_today = user.get("daily_completed_tasks", [])
 
-    # --- 2. DAILY LIMIT CHECK ---
     if daily_count >= 6:
         return None, "Daily Limit (6/6) Reached! 🌙\nKal wapis aana naye tasks ke liye."
 
-    # --- 3. SEQUENCE LOGIC (2 GP -> 2 ShrinkMe -> 2 ShrinkEarn) ---
-    if daily_count < 2: 
-        target = "gplinks"
-    elif daily_count < 4: 
-        target = "shrinkme"
-    else: 
-        target = "shrinkearn"
+    # Sequence Logic
+    if daily_count < 2: target = "gplinks"
+    elif daily_count < 4: target = "shrinkme"
+    else: target = "shrinkearn"
 
-    # --- 4. FETCH RANDOM TASK ---
+    # Fetch Random Task
     pipeline = [
         {"$match": {
             "shortener_type": target,
-            "users_completed": {"$ne": user_id}, # Jo kabhi nahi kiya
-            "_id": {"$nin": completed_today}     # Jo aaj nahi kiya
+            "users_completed": {"$ne": user_id},
+            "_id": {"$nin": completed_today}
         }},
-        {"$sample": {"size": 1}} # Random 1 pick karo
+        {"$sample": {"size": 1}}
     ]
-    
     tasks = await tasks_col.aggregate(pipeline).to_list(1)
     
     if not tasks: 
@@ -127,17 +192,11 @@ async def get_next_task_for_user(user_id):
     return tasks[0], None
 
 async def get_task_details(task_id):
-    """Task ID se details layega (Verification ke liye)"""
-    try: 
-        return await tasks_col.find_one({"_id": ObjectId(task_id)})
-    except: 
-        return None
+    try: return await tasks_col.find_one({"_id": ObjectId(task_id)})
+    except: return None
 
 async def mark_task_complete(user_id, task_id, reward):
-    """Task Complete hone par Balance Update"""
     user_id = int(user_id)
-    
-    # User Update
     await users_col.update_one(
         {"user_id": user_id},
         {
@@ -145,7 +204,6 @@ async def mark_task_complete(user_id, task_id, reward):
             "$push": {"daily_completed_tasks": ObjectId(task_id)}
         }
     )
-    # Task Update
     await tasks_col.update_one(
         {"_id": ObjectId(task_id)}, 
         {"$push": {"users_completed": user_id}}
@@ -153,97 +211,11 @@ async def mark_task_complete(user_id, task_id, reward):
     return True
 
 # ==========================================
-# ADMIN POWER FUNCTIONS (Admin Bot ke liye)
+# DAILY UNLOCK & CHECK-IN LOGIC
 # ==========================================
 
-async def get_system_stats():
-    """Dashboard Stats"""
-    users = await users_col.count_documents({})
-    tasks = await tasks_col.count_documents({})
-    
-    # Total Balance Calculation
-    pipeline = [{"$group": {"_id": None, "total": {"$sum": "$balance"}}}]
-    res = await users_col.aggregate(pipeline).to_list(1)
-    bal = res[0]['total'] if res else 0.0
-    
-    return users, bal, tasks
-
-async def get_recent_tasks(limit=10):
-    """Delete karne ke liye list"""
-    return await tasks_col.find({}).sort("_id", -1).limit(limit).to_list(limit)
-
-async def delete_task_from_db(task_id):
-    """Task delete karna"""
-    try:
-        res = await tasks_col.delete_one({"_id": ObjectId(task_id)})
-        return res.deleted_count > 0
-    except: return False
-
-async def get_user_details(user_id):
-    """Admin search ke liye (Alias for get_user but ensures int)"""
-    return await users_col.find_one({"user_id": int(user_id)})
-
-async def update_user_ban_status(user_id, status):
-    """Ban/Unban User"""
-    await users_col.update_one(
-        {"user_id": int(user_id)}, 
-        {"$set": {"is_banned": status}}
-    )
-
-async def admin_add_balance(user_id, amount):
-    """Admin Give/Cut Balance"""
-    await users_col.update_one(
-        {"user_id": int(user_id)}, 
-        {"$inc": {"balance": float(amount)}}
-    )
-    return True
-
-async def get_all_user_ids():
-    """Broadcast ke liye"""
-    users = await users_col.find({}, {"user_id": 1}).to_list(None)
-    return [u['user_id'] for u in users]
-
-
-
-# --- Naya Function Add karein ---
-async def get_user_by_email(email):
-    """Email se user dhundne ke liye"""
-    if users_col is None: return None
-    # Case-insensitive search (chhota/bada letter fark nahi padega)
-    return await users_col.find_one({"email": email})
-
-
-
-# --- NEW: RENEW TASK LOGIC ---
-
-async def mark_user_renewed(user_id):
-    """User ne 'Renew Task Today' button dabaya, aaj ki date save karo"""
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    
-    await users_col.update_one(
-        {"user_id": int(user_id)},
-        {"$set": {"last_renew_date": today_str}}
-    )
-    return True
-
-async def check_user_renewed_today(user_id):
-    """Check karo ki user ne aaj Renew button dabaya tha ya nahi"""
-    user = await users_col.find_one({"user_id": int(user_id)})
-    if not user: return False
-    
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    last_renew = user.get("last_renew_date")
-    
-    return last_renew == today_str
-
-    # added by me -------------------
-    # ... (Upar ka code same rahega) ...
-
-# --- NEW: SETTINGS COLLECTION (For Daily Code) ---
-settings_col = db['settings']
-
 async def set_daily_checkin_code(code):
-    """Admin is function se code save karega"""
+    """Admin sets daily code"""
     await settings_col.update_one(
         {"_id": "daily_code"}, 
         {"$set": {"value": code}}, 
@@ -252,13 +224,29 @@ async def set_daily_checkin_code(code):
     return True
 
 async def get_daily_checkin_code():
-    """User verify karte waqt yahan se code layega"""
+    """Fetch daily code for verification"""
     data = await settings_col.find_one({"_id": "daily_code"})
     return data['value'] if data else None
 
-# (Note: mark_user_renewed aur check_user_renewed_today already hain, unhe mat hatana)
+async def mark_user_renewed(user_id):
+    """User ne aaj unlock kar liya"""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    await users_col.update_one(
+        {"user_id": int(user_id)},
+        {"$set": {"last_renew_date": today_str}}
+    )
+    return True
 
-# ... Upar ka code same rahega ...
+async def check_user_renewed_today(user_id):
+    """Check status"""
+    user = await users_col.find_one({"user_id": int(user_id)})
+    if not user: return False
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    return user.get("last_renew_date") == today_str
+
+# ==========================================
+# ADMIN POWER FUNCTIONS
+# ==========================================
 
 async def get_system_stats():
     """Dashboard Stats + Today Active Users"""
@@ -267,12 +255,35 @@ async def get_system_stats():
     total_users = await users_col.count_documents({})
     total_tasks = await tasks_col.count_documents({})
     
-    # 1. Active Users Count (Jinone aaj renew kiya)
+    # Active Users (Renewed Today)
     active_today = await users_col.count_documents({"last_renew_date": today_str})
     
-    # 2. Total Balance Calculation
+    # Total Balance
     pipeline = [{"$group": {"_id": None, "total": {"$sum": "$balance"}}}]
     res = await users_col.aggregate(pipeline).to_list(1)
     total_balance = res[0]['total'] if res else 0.0
     
-    return total_users, total_balance, total_tasks, active_today # <--- Added active_today
+    return total_users, total_balance, total_tasks, active_today
+
+async def get_recent_tasks(limit=10):
+    return await tasks_col.find({}).sort("_id", -1).limit(limit).to_list(limit)
+
+async def delete_task_from_db(task_id):
+    try:
+        res = await tasks_col.delete_one({"_id": ObjectId(task_id)})
+        return res.deleted_count > 0
+    except: return False
+
+async def get_user_details(user_id):
+    return await users_col.find_one({"user_id": int(user_id)})
+
+async def update_user_ban_status(user_id, status):
+    await users_col.update_one({"user_id": int(user_id)}, {"$set": {"is_banned": status}})
+
+async def admin_add_balance(user_id, amount):
+    await users_col.update_one({"user_id": int(user_id)}, {"$inc": {"balance": float(amount)}})
+    return True
+
+async def get_all_user_ids():
+    users = await users_col.find({}, {"user_id": 1}).to_list(None)
+    return [u['user_id'] for u in users]

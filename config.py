@@ -28,5 +28,10 @@ SHORTENER_CONFIG = {
     }
 }
 
+# ... Purana code ...
 
+# --- MONEY SETTINGS ---
+REFERRAL_REWARD = 5.0      # Refer karne wale ko ₹5 milenge (Jab dost withdraw karega)
+MIN_WITHDRAW_FIRST = 2.0   # Pehla withdraw ₹2 par
+MIN_WITHDRAW_NEXT = 20.0   # Uske baad ₹20 par
 
