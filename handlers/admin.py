@@ -10,15 +10,18 @@ from database import (
     delete_task_from_db,
     get_system_stats, 
     get_user_details, 
+    get_user,  # <--- Added
     get_user_by_email,
     update_user_ban_status,
     admin_add_balance, 
     get_all_user_ids,
     set_daily_checkin_code,
-    refund_user_balance # Required for decline
+    refund_user_balance,
+    credit_referral_bonus # <--- Added for Bonus
 )
 from utils import shorten_link
-from config import ADMIN_IDS, BOT_TOKEN # User Bot Token for notification
+# REFERRAL_REWARD ko config se import karna na bhulein
+from config import ADMIN_IDS, BOT_TOKEN, REFERRAL_REWARD 
 
 admin_router = Router()
 
@@ -63,7 +66,7 @@ async def admin_dashboard(message: types.Message, state: FSMContext):
     if not is_auth(message.from_user.id): return
     await state.clear() 
 
-    # Unpack 4 values (active_today added)
+    # Unpack 4 values
     users, balance, tasks, active_today = await get_system_stats()
     
     msg = (
@@ -261,7 +264,7 @@ async def process_add_balance(m: types.Message, state: FSMContext):
     except: await m.answer("Invalid Amount.")
 
 # ==========================================
-# 🔥 WITHDRAW APPROVAL LOGIC (Notification Here)
+# 🔥 WITHDRAW APPROVAL LOGIC (Fixed)
 # ==========================================
 @admin_router.callback_query(F.data.startswith("wd_"))
 async def handle_withdraw_action(c: types.CallbackQuery):
@@ -270,12 +273,36 @@ async def handle_withdraw_action(c: types.CallbackQuery):
     user_id = int(parts[2])
     amount = float(parts[3])
     
-    # 🔔 HUM USER BOT USE KARENGE NOTIFY KARNE KE LIYE
-    # Kyunki user ne User Bot start kiya hai, Admin Bot nahi.
+    # User Bot se notification bhejna hai
     user_bot = Bot(token=BOT_TOKEN)
     
     if action == "y":
-        # Approve: Send success message
+        # -----------------------------------------------
+        # ✅ REFERRAL BONUS LOGIC ADDED HERE
+        # -----------------------------------------------
+        # Check karein user ka data
+        user = await get_user(user_id)
+        
+        # Logic: Withdraw Request ke time count 1 ho gaya tha.
+        # Isliye agar count == 1 hai, matlab ye Pehla Withdraw hai.
+        if user and user.get("withdraw_count") == 1:
+            referrer_id = user.get("referred_by")
+            
+            if referrer_id:
+                # Bonus Dein
+                await credit_referral_bonus(referrer_id, REFERRAL_REWARD)
+                
+                # Referrer ko Notify karein
+                try:
+                    await user_bot.send_message(
+                        chat_id=referrer_id,
+                        text=f"🎉 **Congratulations!**\n\nAapke friend ne apna pehla withdrawal kiya hai.\nAapko **₹{REFERRAL_REWARD}** ka Referral Bonus mila hai! 💰"
+                    )
+                except Exception as e:
+                    print(f"Referrer Notify Error: {e}")
+        # -----------------------------------------------
+
+        # User ko Success msg bhejein
         try:
             await user_bot.send_message(
                 chat_id=user_id,

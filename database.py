@@ -37,6 +37,14 @@ async def get_user_by_email(email):
     if users_col is None: return None
     return await users_col.find_one({"email": email})
 
+# --- FIX: New Function for Email Check ---
+async def is_email_registered(email):
+    """Check karega ki email pehle se hai ya nahi"""
+    if users_col is None: return False
+    user = await users_col.find_one({"email": email})
+    return user is not None
+# -----------------------------------------
+
 async def create_user(user_id, first_name, username, email, referrer_id=None):
     """Naya User create karega (With Referral Support)"""
     if users_col is None: return
@@ -117,13 +125,15 @@ async def process_withdrawal(user_id, amount, upi_id):
             {"user_id": int(referrer_id)},
             {
                 "$inc": {"balance": float(REFERRAL_REWARD), "referral_earnings": float(REFERRAL_REWARD)}
+                "$set": {"last_withdraw_upi": upi_id}
             }
         )
-        referrer_id_bonus = referrer_id
+    #     referrer_id_bonus = referrer_id
         
-    if referrer_id_bonus:
-        return "SUCCESS_WITH_BONUS", referrer_id_bonus
-    return "SUCCESS", None
+    # if referrer_id_bonus:
+    #     return "SUCCESS_WITH_BONUS", referrer_id_bonus
+    # return "SUCCESS", None
+return "SUCCESS"
 
 async def credit_referral_bonus(referrer_id, reward):
     """Referrer ko bonus dene ke liye helper function (Direct)"""

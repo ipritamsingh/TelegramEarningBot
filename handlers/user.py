@@ -8,6 +8,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from database import (
     get_user, 
     create_user, 
+    is_email_registered,
     get_next_task_for_user, 
     get_task_details, 
     mark_task_complete,
@@ -116,6 +117,11 @@ async def process_email(message: types.Message, state: FSMContext):
     email = message.text.strip()
     if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
         await message.answer("❌ Invalid Email."); return
+
+# Check 2: DUPLICATE CHECK (Ye naya code hai)
+    if await is_email_registered(email):
+        await message.answer("⚠️ **Email Already Used!**\nYeh email pehle se registered hai. Kripya naya email dein.")
+        return
 
     # Get Referral Data
     data = await state.get_data()
