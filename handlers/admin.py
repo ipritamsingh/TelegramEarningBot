@@ -13,10 +13,11 @@ from database import (
     get_user_by_email,
     update_user_ban_status,
     admin_add_balance, 
-    get_all_user_ids
+    get_all_user_ids,
+    set_daily_checkin_code # <--- Ensure this is imported
 )
 from utils import shorten_link
-from config import ADMIN_IDS, BOT_TOKEN # <--- BOT_TOKEN import kiya (User Bot wala)
+from config import ADMIN_IDS, BOT_TOKEN 
 
 admin_router = Router()
 
@@ -26,35 +27,28 @@ def is_auth(user_id):
 
 # --- STATES (FSM) ---
 class AdminState(StatesGroup):
-    # User Operations
-    waiting_for_user_search = State() # ID or Email input
+    waiting_for_user_search = State()
     waiting_for_balance_amount = State()
-    
-    # Broadcast
     waiting_for_broadcast = State()
-    
-    # Add Task Process
     task_title = State()
     task_reward = State()
     task_link = State()
     task_code = State()
-    waiting_for_shortener_selection = State() # Single vs Bulk Selection
+    waiting_for_shortener_selection = State()
+    waiting_for_daily_code = State() # For setting daily code
 
 # ==========================================
 # 🛠️ HELPER: KEYBOARDS (UI)
 # ==========================================
 def get_admin_dashboard_kb():
     kb = InlineKeyboardBuilder()
-    # Row 1
     kb.button(text="➕ Add New Task", callback_data="btn_add_task")
+    kb.button(text="🔑 Set Check-in Code", callback_data="btn_set_code")
     kb.button(text="🗑️ Manage Tasks", callback_data="btn_manage_tasks")
-    # Row 2
     kb.button(text="👤 Search User", callback_data="btn_search_user")
     kb.button(text="📢 Broadcast", callback_data="btn_broadcast")
-    # Row 3
     kb.button(text="🔄 Refresh Stats", callback_data="btn_refresh")
-    
-    kb.adjust(2, 2, 1)
+    kb.adjust(2, 1, 2, 1)
     return kb.as_markup()
 
 def get_cancel_kb():
@@ -63,19 +57,21 @@ def get_cancel_kb():
     return kb.as_markup()
 
 # ==========================================
-# 1. MAIN DASHBOARD (/start or /admin)
+# 1. MAIN DASHBOARD (Updated with Active Users)
 # ==========================================
 @admin_router.message(Command("start", "admin"))
 async def admin_dashboard(message: types.Message, state: FSMContext):
     if not is_auth(message.from_user.id): return
-    await state.clear() # Reset any ongoing process
+    await state.clear() 
 
-    users, balance, tasks = await get_system_stats()
+    # Unpack 4 values now (active_today added)
+    users, balance, tasks, active_today = await get_system_stats()
     
     msg = (
         "🛡️ **ADMIN CONTROL PANEL** 🛡️\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"👥 **Total Users:** `{users}`\n"
+        f"🟢 **Active Today:** `{active_today}`\n" # <--- New Stat
         f"💰 **Total Liability:** `₹{balance:.2f}`\n"
         f"📋 **Active Tasks:** `{tasks}`\n"
         "━━━━━━━━━━━━━━━━━━\n"
@@ -87,11 +83,12 @@ async def admin_dashboard(message: types.Message, state: FSMContext):
 async def refresh_stats(callback: types.CallbackQuery):
     if not is_auth(callback.from_user.id): return
     
-    users, balance, tasks = await get_system_stats()
+    users, balance, tasks, active_today = await get_system_stats()
     msg = (
         "🛡️ **ADMIN CONTROL PANEL** 🛡️\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"👥 **Total Users:** `{users}`\n"
+        f"🟢 **Active Today:** `{active_today}`\n"
         f"💰 **Total Liability:** `₹{balance:.2f}`\n"
         f"📋 **Active Tasks:** `{tasks}`\n"
         "━━━━━━━━━━━━━━━━━━\n"
@@ -101,7 +98,33 @@ async def refresh_stats(callback: types.CallbackQuery):
     except: await callback.answer("Stats are up to date!")
 
 # ==========================================
-# 2. ADD TASK FLOW (Step-by-Step)
+# 2. SET DAILY CODE (New Feature)
+# ==========================================
+@admin_router.callback_query(F.data == "btn_set_code")
+async def ask_daily_code(c: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AdminState.waiting_for_daily_code)
+    await c.message.answer(
+        "🔑 **Set Daily Check-in Code:**\n\n"
+        "Naya Code enter karein (e.g. `TODAY505`)\n"
+        "Ye code Official Channel par post karna hoga.", 
+        reply_markup=get_cancel_kb()
+    )
+    await c.answer()
+
+@admin_router.message(StateFilter(AdminState.waiting_for_daily_code))
+async def save_daily_code(m: types.Message, state: FSMContext):
+    code = m.text.strip()
+    await set_daily_checkin_code(code) # DB Call
+    await m.answer(
+        f"✅ **Code Saved:** `{code}`\n\n"
+        "Ab is code ko Channel par publish karein.\n"
+        "Users ko ye code submit karna padega unlock karne ke liye.",
+        reply_markup=get_admin_dashboard_kb()
+    )
+    await state.clear()
+
+# ==========================================
+# 3. ADD TASK FLOW (Same as before)
 # ==========================================
 @admin_router.callback_query(F.data == "btn_add_task")
 async def start_add_task(c: types.CallbackQuery, state: FSMContext):
@@ -137,7 +160,6 @@ async def set_link(m: types.Message, state: FSMContext):
 async def set_code_and_ask_type(m: types.Message, state: FSMContext):
     await state.update_data(code=m.text.strip())
     
-    # Selection Menu
     kb = InlineKeyboardBuilder()
     kb.button(text="🌍 All 3 (Bulk)", callback_data="create_all")
     kb.button(text="1️⃣ GPLinks Only", callback_data="create_gplinks")
@@ -193,7 +215,7 @@ async def final_create_task(c: types.CallbackQuery, state: FSMContext):
     await admin_dashboard(c.message, state)
 
 # ==========================================
-# 3. MANAGE & DELETE TASKS
+# 4. MANAGE & DELETE TASKS (Same)
 # ==========================================
 @admin_router.callback_query(F.data == "btn_manage_tasks")
 async def show_manage_list(c: types.CallbackQuery):
@@ -214,7 +236,7 @@ async def delete_handler(c: types.CallbackQuery):
     else: await c.answer("Error.", show_alert=True)
 
 # ==========================================
-# 4. USER SEARCH (ID or Email) & ACTIONS
+# 5. USER SEARCH (ID or Email) (Same)
 # ==========================================
 @admin_router.callback_query(F.data == "btn_search_user")
 async def ask_search_query(c: types.CallbackQuery, state: FSMContext):
@@ -226,25 +248,15 @@ async def ask_search_query(c: types.CallbackQuery, state: FSMContext):
 async def show_user_profile(m: types.Message, state: FSMContext):
     query = m.text.strip()
     u = None
+    if query.isdigit(): u = await get_user_details(int(query))
+    elif "@" in query: u = await get_user_by_email(query)
+    else: await m.answer("❌ Invalid. Number (ID) ya Email daalein."); return
 
-    # Logic: Agar number hai to ID, warna Email
-    if query.isdigit():
-        u = await get_user_details(int(query))
-    elif "@" in query:
-        u = await get_user_by_email(query)
-    else:
-        await m.answer("❌ Invalid. Number (ID) ya Email daalein.")
-        return
+    if not u: await m.answer("❌ User not found."); return
 
-    if not u:
-        await m.answer("❌ User not found.")
-        return
-
-    # Profile & Buttons
     kb = InlineKeyboardBuilder()
     if u.get('is_banned'): kb.button(text="✅ Unban User", callback_data=f"act_unban_{u['user_id']}")
     else: kb.button(text="🚫 Ban User", callback_data=f"act_ban_{u['user_id']}")
-    
     kb.button(text="💰 Add Balance", callback_data=f"act_addbal_{u['user_id']}")
     kb.adjust(1)
 
@@ -263,7 +275,6 @@ async def show_user_profile(m: types.Message, state: FSMContext):
     await m.answer(info, reply_markup=kb.as_markup())
     await state.clear()
 
-# --- ACTIONS (Ban/Unban/Add Money) ---
 @admin_router.callback_query(F.data.startswith("act_"))
 async def handle_user_action(c: types.CallbackQuery, state: FSMContext):
     parts = c.data.split("_")
@@ -291,16 +302,13 @@ async def process_add_balance(m: types.Message, state: FSMContext):
         amt = float(m.text)
         data = await state.get_data()
         uid = data['target_uid']
-        
         await admin_add_balance(uid, amt)
         await m.answer(f"✅ **Success!** Added ₹{amt} to User `{uid}`.")
-        await state.clear()
-        await admin_dashboard(m, state)
-    except:
-        await m.answer("❌ Invalid Amount. Sirf number daalein.")
+        await state.clear(); await admin_dashboard(m, state)
+    except: await m.answer("❌ Invalid Amount.")
 
 # ==========================================
-# 5. BROADCAST (User Bot ke through)
+# 6. BROADCAST (User Bot ke through) (Same)
 # ==========================================
 @admin_router.callback_query(F.data == "btn_broadcast")
 async def start_broadcast(c: types.CallbackQuery, state: FSMContext):
@@ -313,38 +321,25 @@ async def send_broadcast(m: types.Message, state: FSMContext):
     msg_text = m.text
     status = await m.answer("⏳ **Sending Broadcast...**")
     
-    # --- FIX START ---
-    # Hum temporary User Bot create kar rahe hain message bhejne ke liye
     user_bot_sender = Bot(token=BOT_TOKEN)
-    
     ids = await get_all_user_ids()
     count = 0
     blocked = 0
     
     for uid in ids:
         try:
-            # Use User Bot to send message
             await user_bot_sender.send_message(uid, f"📢 **ADMIN NOTICE**\n\n{msg_text}")
             count += 1
-            await asyncio.sleep(0.05) # Flood limit safe
-        except:
-            blocked += 1
+            await asyncio.sleep(0.05)
+        except: blocked += 1
     
-    # Session close karna zaroori hai
     await user_bot_sender.session.close()
-    # --- FIX END ---
-    
     await status.edit_text(f"✅ **Broadcast Complete!**\nSent: {count}\nFailed/Blocked: {blocked}")
-    await state.clear()
-    await asyncio.sleep(2)
-    await admin_dashboard(m, state)
+    await state.clear(); await asyncio.sleep(2); await admin_dashboard(m, state)
 
 # ==========================================
 # CANCEL BUTTON
 # ==========================================
 @admin_router.callback_query(F.data == "btn_cancel")
 async def cancel_operation(c: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await c.message.delete()
-    await c.answer("Cancelled")
-    await admin_dashboard(c.message, state)
+    await state.clear(); await c.message.delete(); await c.answer("Cancelled"); await admin_dashboard(c.message, state)

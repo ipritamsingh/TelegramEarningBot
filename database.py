@@ -235,3 +235,44 @@ async def check_user_renewed_today(user_id):
     last_renew = user.get("last_renew_date")
     
     return last_renew == today_str
+
+    # added by me -------------------
+    # ... (Upar ka code same rahega) ...
+
+# --- NEW: SETTINGS COLLECTION (For Daily Code) ---
+settings_col = db['settings']
+
+async def set_daily_checkin_code(code):
+    """Admin is function se code save karega"""
+    await settings_col.update_one(
+        {"_id": "daily_code"}, 
+        {"$set": {"value": code}}, 
+        upsert=True
+    )
+    return True
+
+async def get_daily_checkin_code():
+    """User verify karte waqt yahan se code layega"""
+    data = await settings_col.find_one({"_id": "daily_code"})
+    return data['value'] if data else None
+
+# (Note: mark_user_renewed aur check_user_renewed_today already hain, unhe mat hatana)
+
+# ... Upar ka code same rahega ...
+
+async def get_system_stats():
+    """Dashboard Stats + Today Active Users"""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    total_users = await users_col.count_documents({})
+    total_tasks = await tasks_col.count_documents({})
+    
+    # 1. Active Users Count (Jinone aaj renew kiya)
+    active_today = await users_col.count_documents({"last_renew_date": today_str})
+    
+    # 2. Total Balance Calculation
+    pipeline = [{"$group": {"_id": None, "total": {"$sum": "$balance"}}}]
+    res = await users_col.aggregate(pipeline).to_list(1)
+    total_balance = res[0]['total'] if res else 0.0
+    
+    return total_users, total_balance, total_tasks, active_today # <--- Added active_today

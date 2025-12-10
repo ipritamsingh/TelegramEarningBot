@@ -1,5 +1,5 @@
 import re
-import asyncio  # <--- Ye zaroori hai delay ke liye
+import asyncio # Required for delay
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -12,7 +12,8 @@ from database import (
     get_task_details, 
     mark_task_complete,
     mark_user_renewed,
-    check_user_renewed_today
+    check_user_renewed_today,
+    get_daily_checkin_code # Ensure this exists in database.py
 )
 from config import FORCE_SUB_CHANNEL_ID, FORCE_SUB_LINK, SUPPORT_BOT_USERNAME
 
@@ -22,6 +23,7 @@ user_router = Router()
 class UserState(StatesGroup):
     waiting_for_email = State()
     waiting_for_task_code = State()
+    waiting_for_daily_checkin_code = State() # For daily unlock code
 
 # ==========================================
 # 🛠️ HELPERS
@@ -51,7 +53,7 @@ async def is_user_subscribed(bot, user_id):
             return True
         return False
     except Exception as e:
-        print(f"[ERROR] Force Sub Check: {e}")
+        print(f"[ERROR] Force Sub Check Failed: {e}")
         return False 
 
 async def check_and_show_dashboard(message, user_id, first_name):
@@ -109,60 +111,79 @@ async def verify_click(callback: types.CallbackQuery):
         await callback.answer("❌ Join nahi kiya!", show_alert=True)
 
 # ==========================================
-# 🔥 NEW: DELAYED CONFIRM BUTTON LOGIC
+# 🔥 NEW: 3-STEP SECURE UNLOCK LOGIC
 # ==========================================
 @user_router.message(F.text == "🔓 Unlock Task Today")
 async def unlock_task_request(message: types.Message):
-    # 1. Link Prepare Karo
+    # 1. Link Preparation
     channel_link = str(FORCE_SUB_LINK).strip()
     if not channel_link.startswith("http"):
         channel_link = f"https://{channel_link}"
     
-    # 2. Pehle Sirf "Red Button" Dikhao
+    # 2. Initial Button (Only Red Button)
     kb_initial = InlineKeyboardBuilder()
-    kb_initial.button(text="🔴 Open & Unlock Task", url=channel_link)
+    kb_initial.button(text="🔴 Open & Unlock", url=channel_link)
     
-    # Message bhejo (Abhi Confirm button nahi hai)
-    sent_msg = await message.answer(
-        "🔓 **Unlock Process Started...**\n\n"
-        "1️⃣ Upar diye gaye **Red Button** par click karke Channel Join karein.\n"
-        "2️⃣ **3 Second wait karein**, Confirm button niche appear hoga...",
+    # Send Message
+    msg = await message.answer(
+        "🔒 **Unlock Process Started...**\n\n"
+        "1️⃣ Upar **Red Button** par click karein aur Channel me **Check-in Code** dekhein.\n"
+        "2️⃣ **3 Second wait karein**, Submit button appear hoga...",
         reply_markup=kb_initial.as_markup()
     )
 
-    # 3. Wait for 10 Seconds (Simulating user clicking the link)
-    await asyncio.sleep(10)
+    # 3. Wait for 3 Seconds (User goes to channel)
+    await asyncio.sleep(3)
 
-    # 4. Message Update Karo (Ab Confirm button add kar do)
+    # 4. Update Message (Show Submit Button)
     kb_final = InlineKeyboardBuilder()
-    kb_final.button(text="🔴 Open & Unlock Task", url=channel_link)
-    # Naya Button Add kiya
-    kb_final.button(text="✅ Confirm & Unlock", callback_data="confirm_task_unlock")
-    kb_final.adjust(1) # Ek ke niche ek
+    kb_final.button(text="🔴 Open & Unlock", url=channel_link)
+    kb_final.button(text="✅ Submit & Unlock", callback_data="ask_daily_code") # Triggers input
+    kb_final.adjust(1)
 
     try:
-        await sent_msg.edit_reply_markup(reply_markup=kb_final.as_markup())
+        await msg.edit_reply_markup(reply_markup=kb_final.as_markup())
     except:
-        pass # Agar user ne message delete kar diya ho to error ignore karo
+        pass # Ignore if user deleted message
 
-# --- CONFIRM HANDLER (Database Update Yahan Hoga) ---
-@user_router.callback_query(F.data == "confirm_task_unlock")
-async def confirm_unlock_click(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
+# --- ASK CODE HANDLER ---
+@user_router.callback_query(F.data == "ask_daily_code")
+async def ask_checkin_code(c: types.CallbackQuery, state: FSMContext):
+    await state.set_state(UserState.waiting_for_daily_checkin_code)
+    await c.message.answer("⌨️ **Enter Today's Check-in Code:**\n(Jo aapne channel par dekha)")
+    await c.answer()
+
+# --- VERIFY CODE HANDLER ---
+@user_router.message(StateFilter(UserState.waiting_for_daily_checkin_code))
+async def verify_daily_code(m: types.Message, state: FSMContext):
+    user_input = m.text.strip()
     
-    # 1. Database Update (Ab Task Unlock hoga)
-    await mark_user_renewed(user_id)
+    # Database se Admin ka set kiya hua code lao
+    real_code = await get_daily_checkin_code()
     
-    # 2. Message Change (Success)
-    await callback.message.edit_text(
-        "✅ **Tasks Unlocked Successfully!**\n\n"
-        "Ab aap **🚀 Start Task** button use kar sakte hain.\n"
-        "Happy Earning! 💰"
-    )
-    await callback.answer("Success! Tasks Unlocked.")
+    if not real_code:
+        await m.answer("⚠️ Admin ne aaj ka Code set nahi kiya hai. Please wait.")
+        await state.clear()
+        return
+
+    # Check Logic (Case Insensitive)
+    if user_input.lower() == real_code.lower():
+        # SUCCESS: Update Database (Unlock Task)
+        await mark_user_renewed(m.from_user.id)
+        
+        await m.answer(
+            "✅ **Code Correct! Tasks Unlocked.**\n\n"
+            "Ab aap **🚀 Start Task** button use kar sakte hain.\n"
+            "Happy Earning! 💰",
+            reply_markup=get_main_menu()
+        )
+        await state.clear()
+    else:
+        await m.answer("❌ **Wrong Code!**\nChannel check karein aur sahi code dalein.")
+        # Note: Hum state clear nahi kar rahe taaki user dobara try kar sake
 
 # ==========================================
-# 4. TASK LOGIC (Double Security Check)
+# 4. TASK LOGIC (Secure)
 # ==========================================
 @user_router.message(F.text == "🚀 Start Task")
 @user_router.message(Command("tasks"))
@@ -171,15 +192,15 @@ async def cmd_get_task(message: types.Message):
 
     # CHECK 1: Force Subscribe
     if not await is_user_subscribed(message.bot, user_id):
-        await message.answer("⚠️ **Alert:** Aapne Channel Join nahi kiya!\nJoin karein:", reply_markup=get_join_channel_kb())
+        await message.answer("⚠️ **Alert:** Channel Left! Join wapis karein:", reply_markup=get_join_channel_kb())
         return
 
-    # CHECK 2: Unlock Status
-    # Agar user ne 'Confirm' button nahi dabaya, to ye False rahega
+    # CHECK 2: Unlock Status (Database Check)
     if not await check_user_renewed_today(user_id):
         await message.answer(
             "🛑 **Tasks Locked!**\n\n"
-            "Tasks start karne se pehle **'🔓 Unlock Task Today'** par click karein aur process complete karein.",
+            "1. **'🔓 Unlock Task Today'** par click karein.\n"
+            "2. Channel se Code lein aur Submit karein.",
             reply_markup=get_main_menu()
         )
         return
@@ -206,10 +227,10 @@ async def cmd_get_task(message: types.Message):
 @user_router.callback_query(F.data.startswith("askcode_"))
 async def ask_code(c: types.CallbackQuery, state: FSMContext):
     await state.update_data(tid=c.data.split("_")[1]); await state.set_state(UserState.waiting_for_task_code)
-    await c.message.answer("⌨️ Code:"); await c.answer()
+    await c.message.answer("⌨️ Task Code:"); await c.answer()
 
 @user_router.message(StateFilter(UserState.waiting_for_task_code))
-async def verify_code(m: types.Message, state: FSMContext):
+async def verify_task_code(m: types.Message, state: FSMContext):
     d = await state.get_data(); t = await get_task_details(d.get("tid"))
     if not t: await m.answer("Expired."); await state.clear(); return
     
